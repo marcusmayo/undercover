@@ -22,12 +22,11 @@ def test_seed_loads_the_queue(client):
     expected = [c["claim_id"] for c in json.loads((DATA / "claims.json").read_text())]
     assert [c["claim_id"] for c in claims] == sorted(expected)
     assert {c["status"] for c in claims} == {"waiting"}
-    database = db.connect()
-    counts = {
-        table: database.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]  # noqa: S608
-        for table in ["claims", "policies", "customers", "handlers"]
-    }
-    database.close()
+    with db.engine().connect() as database:
+        counts = {
+            table: db.scalar(database, f"SELECT COUNT(*) FROM {table}")  # noqa: S608
+            for table in ["claims", "policies", "customers", "handlers"]
+        }
     assert counts == {"claims": 25, "policies": 50, "customers": 49, "handlers": 3}
 
 
@@ -97,9 +96,8 @@ def test_instructions(client):
 
 
 def test_seed_stores_the_manual(client):
-    database = db.connect()
-    manual = db.setting(database, "claims_manual")
-    database.close()
+    with db.engine().connect() as database:
+        manual = db.setting(database, "claims_manual")
     assert manual.startswith("# UnderCover Claims Handling Manual")
 
 

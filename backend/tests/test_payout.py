@@ -160,14 +160,14 @@ def test_the_maximum_and_the_floor_are_shown(client):
 def test_sign_off_follows_the_approval_limit(client):
     lines = [line("Hospital", 3750, "expense")]
     assert payout(client, "POL-2006", "emergency_medical", lines)["needs_sign_off"]
-    database = db.connect()
-    company = json.loads(db.setting(database, "company"))
-    company["payout_approval_limit"] = 5000
-    database.execute(
-        "UPDATE settings SET content = ? WHERE name = 'company'", (json.dumps(company),)
-    )
-    database.commit()
-    database.close()
+    with db.engine().begin() as database:
+        company = json.loads(db.setting(database, "company"))
+        company["payout_approval_limit"] = 5000
+        db.run(
+            database,
+            "UPDATE settings SET content = :content WHERE name = 'company'",
+            content=json.dumps(company),
+        )
     assert not payout(client, "POL-2006", "emergency_medical", lines)["needs_sign_off"]
 
 

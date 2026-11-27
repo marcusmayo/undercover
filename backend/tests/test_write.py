@@ -122,12 +122,33 @@ def test_payment_refused(client, decision, amount, message):
     assert response.json()["detail"] == message
 
 
-def test_pay_only_once(client):
+def test_a_repeated_payment_counts_as_done(client):
     decide(client, APPROVE_SMALL)
-    pay(client, 420.0)
-    response = pay(client, 420.0)
+    first = pay(client, 420.0).json()
+    again = pay(client, 420.0)
+    assert again.status_code == 200
+    assert again.json()["paid_at"] == first["paid_at"]
+    response = pay(client, 400.0)
     assert response.status_code == 409
     assert response.json()["detail"] == "CLM-1001 has already been paid"
+
+
+def test_a_repeated_decision_counts_as_done(client):
+    first = decide(client, APPROVE_SMALL)
+    again = client.post("/api/claims/CLM-1001/decision", json=APPROVE_SMALL)
+    assert again.status_code == 200
+    assert again.json()["decided_at"] == first["decided_at"]
+
+
+@pytest.mark.parametrize("different", [DECLINE, APPROVE_SMALL | {"payout": 400.0}])
+def test_a_different_decision_is_refused(client, different):
+    decide(client, APPROVE_SMALL)
+    response = client.post("/api/claims/CLM-1001/decision", json=different)
+    assert response.status_code == 409
+    assert response.json()["detail"] == (
+        "CLM-1001 is already decided (approve), and that stands"
+    )
+    assert client.get("/api/claims/CLM-1001").json()["payout"] == 420.0
 
 
 def test_signoff_releases_payment(client):
@@ -158,18 +179,16 @@ def test_signoff_needs_a_known_handler(client):
 
 
 def test_signoff_needs_authority(client):
-    database = db.connect()
-    record = json.loads(
-        database.execute("SELECT record FROM handlers WHERE id = 'HND-03'").fetchone()[
-            0
-        ]
-    )
-    record["can_approve_over_limit"] = False
-    database.execute(
-        "UPDATE handlers SET record = ? WHERE id = 'HND-03'", (json.dumps(record),)
-    )
-    database.commit()
-    database.close()
+    with db.engine().begin() as database:
+        record = json.loads(
+            db.scalar(database, "SELECT record FROM handlers WHERE id = 'HND-03'")
+        )
+        record["can_approve_over_limit"] = False
+        db.run(
+            database,
+            "UPDATE handlers SET record = :record WHERE id = 'HND-03'",
+            record=json.dumps(record),
+        )
     decide(client, APPROVE_LARGE)
     response = client.post(
         "/api/claims/CLM-1001/signoff", json={"handler_id": "HND-03"}

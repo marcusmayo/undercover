@@ -164,13 +164,13 @@ Move the payout rules into `backend/payout.py` and add `calculate_payout`. Give 
 
 Move `backend/db.py` and every query in `backend/main.py` to SQLAlchemy Core. Add the Postgres engine with the `undercover` schema and a pool of 4. Make `npm run seed` work on Supabase. Make repeats of a decision or a payment count as done. Run `npm run dev` and `npm run seed` with `--env-file .env`, and drop `load_dotenv` from the agent.
 
-- [ ] Every backend and agent test passes on SQLite with no network, unchanged apart from the new behavior
-- [ ] A test of `db` without `DATABASE_URL` uses SQLite; a test with a Postgres URL builds an engine with `search_path=undercover`, `pool_size=4` and `max_overflow=0` (checked without connecting)
-- [ ] `record_decision` repeated with the same decision and payout returns 200 and the claim, with one decision recorded; a different decision returns 409
-- [ ] `pay_claim` repeated with the same amount returns 200 and the claim, paid once; a different amount returns 409
-- [ ] `npm run seed` with `.env` in place reseeds Supabase: through the Supabase MCP server, `undercover.claims` has 25 rows, all `waiting`, and `undercover` holds our tables; running it again gives the same result
-- [ ] `npm run dev`: the dashboard on http://localhost:5173 shows the 25 claims from Supabase (checked with the Playwright MCP server)
-- [ ] `npm run check` passes with `.env` moved out of the way
+- [x] Every backend and agent test passes on SQLite with no network, unchanged apart from the new behavior
+- [x] A test of `db` without `DATABASE_URL` uses SQLite; a test with a Postgres URL builds an engine with `search_path=undercover`, `pool_size=4` and `max_overflow=0` (checked without connecting)
+- [x] `record_decision` repeated with the same decision and payout returns 200 and the claim, with one decision recorded; a different decision returns 409
+- [x] `pay_claim` repeated with the same amount returns 200 and the claim, paid once; a different amount returns 409
+- [x] `npm run seed` with `.env` in place reseeds Supabase: through the Supabase MCP server, `undercover.claims` has 25 rows, all `waiting`, and `undercover` holds our tables; running it again gives the same result
+- [x] `npm run dev`: the dashboard on http://localhost:5173 shows the 25 claims from Supabase (checked with the Playwright MCP server)
+- [x] `npm run check` passes with `.env` moved out of the way
 
 ## Phase 3: the claim agent as a graph
 

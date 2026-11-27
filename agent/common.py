@@ -5,7 +5,6 @@ import os
 from typing import Any
 
 import httpx
-from dotenv import load_dotenv
 from langchain.agents.middleware import (
     AgentMiddleware,
     ModelRetryMiddleware,
@@ -15,8 +14,6 @@ from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
 from langfuse.langchain import CallbackHandler
 from pydantic import SecretStr
-
-load_dotenv(override=True)
 
 BACKEND_URL = "http://localhost:8000"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"

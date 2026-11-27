@@ -1,15 +1,32 @@
-"""The UnderCover database: SQLite, seeded from the business data in data/."""
+"""The UnderCover database: Supabase when DATABASE_URL is set, otherwise SQLite."""
 
 import json
 import os
-import sqlite3
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
+
+from sqlalchemy import (
+    Column,
+    Connection,
+    Engine,
+    Float,
+    Integer,
+    MetaData,
+    RowMapping,
+    Table,
+    Text,
+    create_engine,
+    inspect,
+    text,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "data"
 DEFAULT_PATH = ROOT / "backend" / "undercover.db"
+SCHEMA = "undercover"
+POOL_SIZE = 4
 
 RECORD_FILES = {
     "claims": DATA / "claims.json",
@@ -25,48 +42,6 @@ SETTING_FILES = {
 }
 SEED_FILES = [*RECORD_FILES.values(), *SETTING_FILES.values()]
 
-SCHEMA = """
-CREATE TABLE claims (
-    id TEXT PRIMARY KEY,
-    record TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'waiting',
-    attempts INTEGER NOT NULL DEFAULT 0,
-    run_id INTEGER,
-    thread_id TEXT,
-    decision TEXT,
-    payout REAL,
-    reason TEXT,
-    policy_section TEXT,
-    decided_at TEXT,
-    signed_off_by TEXT,
-    signed_off_at TEXT,
-    paid_amount REAL,
-    paid_at TEXT
-);
-CREATE TABLE policies (id TEXT PRIMARY KEY, record TEXT NOT NULL);
-CREATE TABLE customers (id TEXT PRIMARY KEY, record TEXT NOT NULL);
-CREATE TABLE handlers (id TEXT PRIMARY KEY, record TEXT NOT NULL);
-CREATE TABLE settings (name TEXT PRIMARY KEY, content TEXT NOT NULL);
-CREATE TABLE steps (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    claim_id TEXT NOT NULL,
-    kind TEXT NOT NULL,
-    content TEXT NOT NULL,
-    created_at TEXT NOT NULL
-);
-CREATE TABLE runs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    claim_id TEXT,
-    cap INTEGER NOT NULL,
-    status TEXT NOT NULL DEFAULT 'running',
-    todos TEXT NOT NULL DEFAULT '[]',
-    summary TEXT,
-    problem TEXT,
-    started_at TEXT NOT NULL,
-    finished_at TEXT
-);
-"""
-
 ID_FIELDS = {
     "claims": "claim_id",
     "policies": "policy_id",
@@ -74,10 +49,94 @@ ID_FIELDS = {
     "handlers": "handler_id",
 }
 
+metadata = MetaData()
+Table(
+    "claims",
+    metadata,
+    Column("id", Text, primary_key=True),
+    Column("record", Text, nullable=False),
+    Column("status", Text, nullable=False, server_default="waiting"),
+    Column("attempts", Integer, nullable=False, server_default="0"),
+    Column("run_id", Integer),
+    Column("thread_id", Text),
+    Column("decision", Text),
+    Column("payout", Float),
+    Column("reason", Text),
+    Column("policy_section", Text),
+    Column("decided_at", Text),
+    Column("signed_off_by", Text),
+    Column("signed_off_at", Text),
+    Column("paid_amount", Float),
+    Column("paid_at", Text),
+)
+for name in ["policies", "customers", "handlers"]:
+    Table(
+        name,
+        metadata,
+        Column("id", Text, primary_key=True),
+        Column("record", Text, nullable=False),
+    )
+Table(
+    "settings",
+    metadata,
+    Column("name", Text, primary_key=True),
+    Column("content", Text, nullable=False),
+)
+Table(
+    "steps",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("claim_id", Text, nullable=False),
+    Column("kind", Text, nullable=False),
+    Column("content", Text, nullable=False),
+    Column("created_at", Text, nullable=False),
+)
+Table(
+    "runs",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("claim_id", Text),
+    Column("cap", Integer, nullable=False),
+    Column("status", Text, nullable=False, server_default="running"),
+    Column("todos", Text, nullable=False, server_default="[]"),
+    Column("summary", Text),
+    Column("problem", Text),
+    Column("started_at", Text, nullable=False),
+    Column("finished_at", Text),
+)
+
+engines: dict[str, Engine] = {}
+
 
 def path() -> Path:
-    """Return the database path, from UNDERCOVER_DB if set."""
+    """Return the SQLite database path, from UNDERCOVER_DB if set."""
     return Path(os.getenv("UNDERCOVER_DB", str(DEFAULT_PATH)))
+
+
+def url() -> str:
+    """Return the database URL: DATABASE_URL, or the SQLite file."""
+    return os.getenv("DATABASE_URL") or f"sqlite:///{path()}"
+
+
+def make_engine(database_url: str) -> Engine:
+    """Make an engine: SQLite, or Postgres in our schema with at most 4 connections."""
+    if database_url.startswith("sqlite"):
+        return create_engine(database_url, connect_args={"check_same_thread": False})
+    return create_engine(
+        database_url.replace("postgresql://", "postgresql+psycopg://", 1),
+        pool_size=POOL_SIZE,
+        max_overflow=0,
+        pool_pre_ping=True,
+        connect_args={"options": f"-c search_path={SCHEMA}"},
+    )
+
+
+def engine() -> Engine:
+    """Return the engine for the current database URL."""
+    database_url = url()
+    if database_url not in engines:
+        engines[database_url] = make_engine(database_url)
+    return engines[database_url]
 
 
 def now() -> str:
@@ -85,43 +144,62 @@ def now() -> str:
     return datetime.now(UTC).isoformat(timespec="seconds")
 
 
-def connect() -> sqlite3.Connection:
-    """Open a connection that returns rows by column name."""
-    connection = sqlite3.connect(path(), check_same_thread=False)
-    connection.row_factory = sqlite3.Row
-    return connection
-
-
-def connection() -> Iterator[sqlite3.Connection]:
+def connection() -> Iterator[Connection]:
     """Yield a connection for one request, committing at the end."""
-    db = connect()
-    try:
-        yield db
-        db.commit()
-    finally:
-        db.close()
+    with engine().connect() as database:
+        yield database
+        database.commit()
+
+
+def rows(database: Connection, sql: str, **params: Any) -> list[RowMapping]:
+    """Run a query and return its rows by column name."""
+    return list(database.execute(text(sql), params).mappings())
+
+
+def one(database: Connection, sql: str, **params: Any) -> RowMapping | None:
+    """Run a query and return its first row, or None."""
+    return database.execute(text(sql), params).mappings().first()
+
+
+def scalar(database: Connection, sql: str, **params: Any) -> Any:
+    """Run a query and return the single value it gives."""
+    return database.execute(text(sql), params).scalar_one()
+
+
+def run(database: Connection, sql: str, **params: Any) -> None:
+    """Run a statement."""
+    database.execute(text(sql), params)
+
+
+def exists() -> bool:
+    """Return whether the database has been seeded."""
+    return inspect(engine()).has_table("claims")
 
 
 def seed() -> None:
-    """Rebuild the database from the files in SEED_FILES."""
-    path().unlink(missing_ok=True)
-    db = connect()
-    db.executescript(SCHEMA)
-    for table, file in RECORD_FILES.items():
-        records = json.loads(file.read_text(encoding="utf-8"))
-        rows = [(r[ID_FIELDS[table]], json.dumps(r)) for r in records]
-        db.executemany(f"INSERT INTO {table} (id, record) VALUES (?, ?)", rows)  # noqa: S608
-    for name, file in SETTING_FILES.items():
-        db.execute(
-            "INSERT INTO settings VALUES (?, ?)",
-            (name, file.read_text(encoding="utf-8")),
+    """Rebuild our tables from the files in SEED_FILES, leaving the checkpoints."""
+    with engine().begin() as database:
+        if database.dialect.name == "postgresql":
+            run(database, f"CREATE SCHEMA IF NOT EXISTS {SCHEMA}")
+        metadata.drop_all(database)
+        metadata.create_all(database)
+        for table, file in RECORD_FILES.items():
+            records = json.loads(file.read_text(encoding="utf-8"))
+            database.execute(
+                text(f"INSERT INTO {table} (id, record) VALUES (:id, :record)"),  # noqa: S608
+                [{"id": r[ID_FIELDS[table]], "record": json.dumps(r)} for r in records],
+            )
+        database.execute(
+            text("INSERT INTO settings (name, content) VALUES (:name, :content)"),
+            [
+                {"name": name, "content": file.read_text(encoding="utf-8")}
+                for name, file in SETTING_FILES.items()
+            ],
         )
-    db.commit()
-    db.close()
 
 
-def setting(db: sqlite3.Connection, name: str) -> str:
+def setting(database: Connection, name: str) -> str:
     """Return a setting's content."""
-    return db.execute(
-        "SELECT content FROM settings WHERE name = ?", (name,)
-    ).fetchone()[0]
+    return scalar(
+        database, "SELECT content FROM settings WHERE name = :name", name=name
+    )
