@@ -136,7 +136,7 @@ Connections at most: the backend 4 and the agent's service 4, which leaves room 
 
 ### The e2e tests and the stand-in
 
-The e2e backend gets `UNDERCOVER_AGENT=http://127.0.0.1:8003`. Playwright starts `e2e/agent-standin.mjs` on port 8003, a few lines of Node that record each POST and list them at `GET /calls`. The tests play the agent's part through the API, as they do today, and check the stand-in to see that a sign-off on the dashboard reached the agent. They never reach the service `npm run dev` starts.
+The e2e backend gets `UNDERCOVER_AGENT=http://127.0.0.1:8003`. Playwright starts `e2e/agent-standin.js` on port 8003 (built as `.js`, which is an ES module here and gets the lint config for Node files), a few lines of Node that record each POST and list them at `GET /calls`. The tests play the agent's part through the API, as they do today, and check the stand-in to see that a sign-off on the dashboard reached the agent. They never reach the service `npm run dev` starts.
 
 ### Out of scope
 
@@ -212,13 +212,13 @@ Build `agent/service.py` with `health`, `work_run` and `resume_claim`, the set o
 
 The sign-off button becomes "Sign off" and no longer pays. A claim signed off and not yet paid shows as In progress, with "Signed off by Dana Whitfield at ..., payment on its way". A paid claim shows the payment with the handler and the time of the sign-off. Add the stand-in on port 8003 and point the e2e backend at it.
 
-- [ ] Vitest: signing off sends one request, the sign-off, and never a payment; a signed-off unpaid claim shows the handler, the time and that the payment is on its way; a paid claim shows the payment with the handler and the time
-- [ ] e2e: a claim played to `awaiting_signoff` through the API is signed off on the dashboard; the stand-in's `/calls` lists `POST /claims/<id>/resume`; the claim shows In progress
-- [ ] e2e: the payment played through the API then shows on the claim page as paid, with the handler and the time
-- [ ] e2e: starting a run from the queue page reaches the stand-in as `POST /runs/<id>`
-- [ ] The earlier e2e tests still pass, on the stand-in in place of `UNDERCOVER_AGENT=off`
-- [ ] Checked with the Playwright MCP server in light and dark mode: the sign-off panel and the payment read well and the brand holds
-- [ ] `npm run check` passes with `.env` moved out of the way
+- [x] Vitest: signing off sends one request, the sign-off, and never a payment; a signed-off unpaid claim shows the handler, the time and that the payment is on its way; a paid claim shows the payment with the handler and the time
+- [x] e2e: a claim played to `awaiting_signoff` through the API is signed off on the dashboard; the stand-in's `/calls` lists `POST /claims/<id>/resume`; the claim shows In progress
+- [x] e2e: the payment played through the API then shows on the claim page as paid, with the handler and the time
+- [x] e2e: starting a run from the queue page reaches the stand-in as `POST /runs/<id>`
+- [x] The earlier e2e tests still pass, on the stand-in in place of `UNDERCOVER_AGENT=off`
+- [x] Checked with the Playwright MCP server in light and dark mode: the sign-off panel and the payment read well and the brand holds
+- [x] `npm run check` passes with `.env` moved out of the way
 
 ## Phase 6: the docs and the live checks on Supabase
 

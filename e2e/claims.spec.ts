@@ -1,4 +1,5 @@
 import { expect, test, type APIRequestContext } from "@playwright/test";
+import { agentCalls } from "./standin";
 
 const REASON =
   "Meridian Air canceled the flight for a crew problem. The hotel, meals and taxis are covered.";
@@ -81,12 +82,25 @@ test("a payout over $1,000 waits for a handler's sign-off", async ({
   expect(payment.status()).toBe(409);
 
   await page.goto("/#/claims/CLM-1002");
-  await expect(page.getByText("Waiting for sign-off")).toBeVisible();
+  const title = page.locator(".claim-title");
+  await expect(title.getByText("Waiting for sign-off")).toBeVisible();
   await page.getByLabel("Handler").selectOption({ label: "Dana Whitfield" });
-  await page.getByRole("button", { name: "Sign off and pay" }).click();
-  await expect(page.getByText("Signed off by Dana Whitfield")).toBeVisible();
-  await expect(page.getByText(/^Paid \$1,150\.00 on/)).toBeVisible();
-  await expect(page.locator(".claim-title").getByText("Decided")).toBeVisible();
+  await page.getByRole("button", { name: "Sign off" }).click();
+  await expect(
+    page.getByText(/^Signed off by Dana Whitfield on .+ UTC\.$/),
+  ).toBeVisible();
+  await expect(page.getByText("The payment is on its way.")).toBeVisible();
+  await expect(title.getByText("In progress")).toBeVisible();
+  await expect
+    .poll(async () => agentCalls(request))
+    .toContain("POST /claims/CLM-1002/resume");
+
+  const paid = await request.post("/api/claims/CLM-1002/payment", {
+    data: { amount: 1150 },
+  });
+  expect(paid.ok()).toBe(true);
+  await expect(page.getByText(/^Paid \$1,150\.00 on .+ UTC\.$/)).toBeVisible();
+  await expect(title.getByText("Decided")).toBeVisible();
 });
 
 test("the instructions view shows both sets of instructions", async ({

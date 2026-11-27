@@ -139,8 +139,6 @@ export const api = {
     request<Claim>("POST", `/api/claims/${id}/signoff`, {
       handler_id: handlerId,
     }),
-  pay: (id: string, amount: number) =>
-    request<Claim>("POST", `/api/claims/${id}/payment`, { amount }),
 };
 
 export function message(error: unknown) {

@@ -70,10 +70,7 @@ export function ClaimView({ claimId }: Readonly<{ claimId: string }>) {
 
   const runAgent = () => perform(() => api.runAgent(claimId));
   const signOff = (handlerId: string) =>
-    perform(async () => {
-      await api.signOff(claimId, handlerId);
-      await api.pay(claimId, claim.payout ?? 0);
-    });
+    perform(() => api.signOff(claimId, handlerId));
 
   return (
     <>

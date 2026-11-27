@@ -1,7 +1,7 @@
 import { act, cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { App } from "./App";
-import { date, label, money } from "./format";
+import { date, dateTime, label, money } from "./format";
 import { claim, fakeFetch, summary } from "./testing";
 
 afterEach(() => {
@@ -150,5 +150,8 @@ it("formats money, dates and labels", () => {
   expect(money(1250)).toBe("$1,250.00");
   expect(date("2026-06-24")).toBe("Jun 24, 2026");
   expect(date("2026-06-24T10:00:00+00:00")).toBe("Jun 24, 2026");
+  expect(dateTime("2026-06-24T15:30:00+00:00")).toBe(
+    "Jun 24, 2026, 3:30 PM UTC",
+  );
   expect(label("emergency_medical")).toBe("Emergency medical");
 });

@@ -1,4 +1,5 @@
 import { expect, test, type APIRequestContext } from "@playwright/test";
+import { agentCalls } from "./standin";
 
 async function post(request: APIRequestContext, path: string, data?: object) {
   const response = await request.post(path, { data });
@@ -29,6 +30,9 @@ test("a run started from the queue page shows its to-do list and summary", async
   const run = (await (await request.get("/api/runs/latest")).json()) as {
     id: number;
   };
+  await expect
+    .poll(async () => agentCalls(request))
+    .toContain(`POST /runs/${String(run.id)}`);
   await post(request, `/api/runs/${String(run.id)}/todos`, {
     todos: [
       todo("CLM-1005", "Passport eaten by a giraffe", "in_progress"),

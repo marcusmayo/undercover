@@ -196,7 +196,7 @@ it("shows a decided claim's decision, section and payment", async () => {
   ).toBeDefined();
   expect(panel.getByText("3. Trip Delay")).toBeDefined();
   expect(panel.getByText(/Paid/).textContent).toBe(
-    "Paid $420.00 on Nov 14, 2026.",
+    "Paid $420.00 on Nov 14, 2026, 10:00 AM UTC.",
   );
   expect(
     await panel.findByText(/We pay when your carrier delays you/),
@@ -221,7 +221,7 @@ it("shows an approval not yet paid, and a decline with no payout", async () => {
   expect(panel.queryByText("Not paid yet.")).toBeNull();
 });
 
-it("signs off a large payout and pays it", async () => {
+it("signs off a large payout and leaves the payment to the agent", async () => {
   let current = claim({
     ...DECIDED,
     status: "awaiting_signoff",
@@ -234,17 +234,9 @@ it("signs off a large payout and pays it", async () => {
       "POST /api/claims/CLM-1001/signoff": () => {
         current = {
           ...current,
-          status: "decided",
+          status: "in_progress",
           signed_off_by: "HND-01",
-          signed_off_at: "2026-11-14T11:00:00+00:00",
-        };
-        return current;
-      },
-      "POST /api/claims/CLM-1001/payment": () => {
-        current = {
-          ...current,
-          paid_amount: 1150,
-          paid_at: "2026-11-14T11:00:00+00:00",
+          signed_off_at: "2026-11-14T11:05:00+00:00",
         };
         return current;
       },
@@ -257,20 +249,44 @@ it("signs off a large payout and pays it", async () => {
   const select = screen.getByLabelText("Handler");
   await screen.findByRole("option", { name: "Dana Whitfield" });
   expect(screen.queryByRole("option", { name: "Sam Ortiz" })).toBeNull();
-  const button = screen.getByRole("button", { name: "Sign off and pay" });
+  const button = screen.getByRole("button", { name: "Sign off" });
   expect(button.hasAttribute("disabled")).toBe(true);
   fireEvent.change(select, { target: { value: "HND-01" } });
   fireEvent.click(button);
   expect(
-    await screen.findByText("Signed off by Dana Whitfield on Nov 14, 2026."),
+    await screen.findByText(
+      "Signed off by Dana Whitfield on Nov 14, 2026, 11:05 AM UTC.",
+    ),
+  ).toBeDefined();
+  expect(screen.getByText("The payment is on its way.")).toBeDefined();
+  expect(screen.getByText("In progress")).toBeDefined();
+  const posts = fetch.mock.calls.filter(([, init]) => init?.method === "POST");
+  expect(posts.map(([path]) => path)).toEqual(["/api/claims/CLM-1001/signoff"]);
+});
+
+it("shows a signed-off payment with the handler and the time", async () => {
+  routes(
+    () =>
+      claim({
+        ...DECIDED,
+        payout: 1150,
+        signed_off_by: "HND-01",
+        signed_off_at: "2026-11-14T11:05:00+00:00",
+        paid_amount: 1150,
+        paid_at: "2026-11-14T11:05:03+00:00",
+      }),
+    () => [],
+  );
+  render(<ClaimView claimId="CLM-1001" />);
+  expect(
+    await screen.findByText(
+      "Signed off by Dana Whitfield on Nov 14, 2026, 11:05 AM UTC.",
+    ),
   ).toBeDefined();
   expect(screen.getByText(/^Paid/).textContent).toBe(
-    "Paid $1,150.00 on Nov 14, 2026.",
+    "Paid $1,150.00 on Nov 14, 2026, 11:05 AM UTC.",
   );
-  const payment = fetch.mock.calls.find(
-    ([path]) => path === "/api/claims/CLM-1001/payment",
-  );
-  expect(payment?.[1]?.body).toBe(JSON.stringify({ amount: 1150 }));
+  expect(screen.queryByText("The payment is on its way.")).toBeNull();
 });
 
 it("shows the backend's refusal in plain English", async () => {

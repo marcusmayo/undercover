@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { Claim, Handler } from "./api";
-import { date, label, money, section } from "./format";
+import { dateTime, label, money, section } from "./format";
 import { useGet } from "./useGet";
 
 interface Props {
@@ -14,9 +14,12 @@ function Payment({ claim }: Readonly<{ claim: Claim }>) {
     return (
       <p>
         Paid <span className="mono">{money(claim.paid_amount)}</span> on{" "}
-        {date(claim.paid_at)}.
+        {dateTime(claim.paid_at)}.
       </p>
     );
+  }
+  if (claim.signed_off_at !== null) {
+    return <p className="muted">The payment is on its way.</p>;
   }
   if (claim.decision === "approve" && claim.status === "decided") {
     return <p className="muted">Not paid yet.</p>;
@@ -32,7 +35,7 @@ function SignOff({ busy, onSignOff }: Readonly<Omit<Props, "claim">>) {
     <div className="notice">
       <p>
         This payout is over the approval limit, so the payment waits for a
-        handler&apos;s sign-off.
+        handler&apos;s sign-off. Once you sign off, the agent pays it.
       </p>
       <div className="actions">
         <label>
@@ -58,7 +61,7 @@ function SignOff({ busy, onSignOff }: Readonly<Omit<Props, "claim">>) {
             onSignOff(chosen);
           }}
         >
-          Sign off and pay
+          Sign off
         </button>
       </div>
     </div>
@@ -94,7 +97,7 @@ export function DecisionPanel({ claim, busy, onSignOff }: Readonly<Props>) {
       {claim.signed_off_at && (
         <p>
           Signed off by {signer?.name ?? claim.signed_off_by} on{" "}
-          {date(claim.signed_off_at)}.
+          {dateTime(claim.signed_off_at)}.
         </p>
       )}
       <Payment claim={claim} />
