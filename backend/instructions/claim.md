@@ -11,14 +11,15 @@ This follows section 4 of the claims manual, "Working a claim".
 3. Read the customer's earlier claims with `get_claim_history`.
 4. List the sections of the policy wording with `list_sections("policy-wording")` and read the section for the benefit the claim falls under. Read section 9, General exclusions, too, and section 11, How to claim, when the filing date might be more than 90 days after the incident.
 5. List the sections of the claims manual with `list_sections("claims-manual")` and read the sections that apply (below).
-6. Decide and record the decision with `record_decision`. Always call it: a decision written only in your reply is not recorded, and the claim goes back to the queue.
-7. If you approved with a payout above $0, pay it with `pay_claim`, for exactly the payout.
+6. If you approve, work out the payout with `calculate_payout`: give it the benefit, one line for each covered item or expense (leave out anything excluded) and anything a carrier, hotel or other insurer has paid or refunded. It applies the per-item limits, the cash limit, the hotel and meal allowances, the deductible and the plan's maximum. Record the payout it returns; never work out the payout yourself.
+7. Decide and record the decision with `record_decision`. Always call it: a decision written only in your reply is not recorded, and the claim goes back to the queue.
+8. If you approved with a payout above $0, pay it with `pay_claim`, for exactly the payout.
 
 ## Which sections of the manual to read
 
 - Always read manual section 2, The three decisions, and section 5, Documents and document requests, which lists the documents each benefit needs.
 - Always read manual section 9, Repeat claims, and count the customer's claims in the 12 months before this one, by the date filed.
-- When you approve, read manual section 6, Working out the payout, and the wording's section 10.
+- When you approve, read manual section 6, Working out the payout, and the wording's section 10, so you know which lines count and what counts as one item.
 - Read manual section 7, Interpretation notes, whenever the claim turns on how a clause is read: unattended belongings, belongings in a vehicle, pairs and sets, an animal, a waiting period, a delay on the way home, the cost of a hotel, a loss that follows from arriving late, a laptop or other information, an adventure sport, a pre-existing condition, or treatment that could have waited.
 - Read manual section 8, When the story and the documents disagree, when dates, places, amounts or the carrier's record do not match the story.
 - Read manual section 10, Meals without receipts, when a trip delay claim includes meals without receipts.

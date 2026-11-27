@@ -6,6 +6,8 @@ from fastapi.testclient import TestClient
 from backend import db
 from backend.main import app
 
+RUN = {"run_id": 1}
+
 DATA = Path(__file__).resolve().parents[2] / "data"
 
 
@@ -166,7 +168,7 @@ def test_every_operation_is_documented(client):
 
 def test_startup_closes_an_interrupted_run(client):
     client.post("/api/runs", json={"cap": 1})
-    client.post("/api/claims/CLM-1001/start")
+    client.post("/api/claims/CLM-1001/start", json=RUN)
     with TestClient(app) as restarted:
         assert restarted.get("/api/runs/latest").json()["status"] == "failed"
         claim = restarted.get("/api/claims/CLM-1001").json()

@@ -4,6 +4,8 @@ import pytest
 
 from backend import db
 
+RUN = {"run_id": 1}
+
 APPROVE_SMALL = {
     "decision": "approve",
     "payout": 420.0,
@@ -15,7 +17,7 @@ DECLINE = APPROVE_SMALL | {"decision": "decline", "payout": 0}
 
 
 def start(client, claim_id="CLM-1001"):
-    assert client.post(f"/api/claims/{claim_id}/start").status_code == 200
+    assert client.post(f"/api/claims/{claim_id}/start", json=RUN).status_code == 200
 
 
 def decide(client, decision, claim_id="CLM-1001"):
@@ -32,9 +34,24 @@ def pay(client, amount, claim_id="CLM-1001"):
 def test_start_claim(client):
     start(client)
     assert client.get("/api/claims/CLM-1001").json()["status"] == "in_progress"
-    response = client.post("/api/claims/CLM-1001/start")
+    response = client.post("/api/claims/CLM-1001/start", json=RUN)
     assert response.status_code == 409
     assert response.json()["detail"] == "CLM-1001 is in_progress, not waiting"
+
+
+def test_start_claim_stores_the_run_and_a_new_thread(client):
+    start(client)
+    claim = client.get("/api/claims/CLM-1001").json()
+    assert claim["run_id"] == 1
+    assert claim["thread_id"].startswith("CLM-1001-")
+    assert len(claim["thread_id"]) == len("CLM-1001-") + 8
+    client.post("/api/claims/CLM-1001/release", json={"problem": "Timed out"})
+    start(client)
+    assert client.get("/api/claims/CLM-1001").json()["thread_id"] != claim["thread_id"]
+
+
+def test_start_claim_needs_a_run(client):
+    assert client.post("/api/claims/CLM-1001/start").status_code == 422
 
 
 def test_decision_needs_a_claim_in_progress(client):
@@ -222,7 +239,7 @@ def test_second_failure_leaves_the_claim_for_a_handler(client):
     claim = release(client, "Second problem")
     assert claim["status"] == "needs_handler"
     assert claim["attempts"] == 2
-    assert client.post("/api/claims/CLM-1001/start").status_code == 409
+    assert client.post("/api/claims/CLM-1001/start", json=RUN).status_code == 409
     errors = [
         s["content"]
         for s in client.get("/api/claims/CLM-1001/steps").json()

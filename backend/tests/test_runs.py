@@ -2,6 +2,8 @@ import pytest
 
 from agent import queue as runner
 
+RUN = {"run_id": 1}
+
 TODOS = [
     {"claim_id": "CLM-1001", "content": "Flight canceled", "status": "done"},
     {"claim_id": "CLM-1002", "content": "Lost bag", "status": "in_progress"},
@@ -101,7 +103,7 @@ def test_run_agent_starts_a_one_claim_run(client, started):
 
 
 def test_run_agent_needs_a_waiting_claim(client, started):
-    client.post("/api/claims/CLM-1001/start")
+    client.post("/api/claims/CLM-1001/start", json=RUN)
     assert client.post("/api/claims/CLM-1001/run").status_code == 409
     assert started == []
 

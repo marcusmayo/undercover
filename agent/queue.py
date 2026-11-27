@@ -87,7 +87,7 @@ def tools(run: Run) -> list[BaseTool]:
                 return f"Refused: this run is for {run.claim_id} only"
             if claim_id not in run.worked and len(run.worked) >= run.cap:
                 return f"Refused: the run has already worked its cap of {run.cap}"
-            line = claim.work_claim(claim_id, run.llm)
+            line = claim.work_claim(run.id, claim_id, run.llm)
             if not line.startswith("Refused") and claim_id not in run.worked:
                 run.worked.append(claim_id)
             return line

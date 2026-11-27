@@ -63,7 +63,7 @@ test("a claim that fails twice is left for a handler with both problems", async 
     "The model provider timed out",
     "It timed out again",
   ]) {
-    await post(request, "/api/claims/CLM-1007/start");
+    await post(request, "/api/claims/CLM-1007/start", { run_id: 1 });
     await post(request, "/api/claims/CLM-1007/release", { problem });
   }
   await page.goto("/");

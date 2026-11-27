@@ -173,7 +173,7 @@ def test_finish_is_refused_while_a_retry_is_due(client):
 
 def test_a_queue_agent_that_raises_fails_the_run(client):
     run_id = start(client, 2)
-    client.post("/api/claims/CLM-1003/start")
+    client.post("/api/claims/CLM-1003/start", json={"run_id": run_id})
     queue.run_queue(run_id, stub(*DOWN))
     failed = run(client, run_id)
     assert failed["status"] == "failed"

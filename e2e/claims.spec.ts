@@ -8,7 +8,13 @@ async function decide(
   claimId: string,
   decision: object,
 ) {
-  expect((await request.post(`/api/claims/${claimId}/start`)).ok()).toBe(true);
+  expect(
+    (
+      await request.post(`/api/claims/${claimId}/start`, {
+        data: { run_id: 1 },
+      })
+    ).ok(),
+  ).toBe(true);
   const response = await request.post(`/api/claims/${claimId}/decision`, {
     data: decision,
   });

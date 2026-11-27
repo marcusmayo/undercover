@@ -3,6 +3,7 @@
 import json
 import os
 import sqlite3
+import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -13,6 +14,7 @@ from pydantic import BaseModel, Field, model_validator
 
 import agent.queue as runner
 from backend import db
+from backend.payout import Payout, PayoutRequest, Rules
 
 INSTRUCTIONS = Path(__file__).parent / "instructions"
 MAX_ATTEMPTS = 2
@@ -22,6 +24,8 @@ DOCUMENTS = {
 }
 DECISION_FIELDS = [
     "attempts",
+    "run_id",
+    "thread_id",
     "decision",
     "payout",
     "reason",
@@ -120,6 +124,15 @@ def get_policy(policy_id: str, database: Db) -> dict[str, Any]:
     }
 
 
+@app.post("/api/policies/{policy_id}/payout", operation_id="calculate_payout")
+def calculate_payout(policy_id: str, request: PayoutRequest, database: Db) -> Payout:
+    """Work out the payout on an approved claim with UnderCover's payout rules."""
+    policy = json.loads(find(database, "policies", policy_id)["record"])
+    plans = json.loads(db.setting(database, "plans"))
+    company = json.loads(db.setting(database, "company"))
+    return Rules(policy, plans, company).work_out(request)
+
+
 @app.get("/api/customers/{customer_id}/history", operation_id="get_claim_history")
 def get_claim_history(customer_id: str, database: Db) -> dict[str, Any]:
     """Get a customer's earlier claims, without their personal details."""
@@ -215,6 +228,12 @@ class SignOff(BaseModel):
     """A handler's sign-off of a large payout."""
 
     handler_id: str
+
+
+class StartClaim(BaseModel):
+    """The run that starts work on a claim."""
+
+    run_id: int
 
 
 class Step(BaseModel):
@@ -382,14 +401,16 @@ def run_agent(
 
 
 @app.post("/api/claims/{claim_id}/start", operation_id="start_claim")
-def start_claim(claim_id: str, database: Db) -> dict[str, Any]:
-    """Mark a waiting claim as in progress, marking a retry as a new attempt."""
+def start_claim(claim_id: str, start: StartClaim, database: Db) -> dict[str, Any]:
+    """Start a waiting claim in a run, on a new thread for this attempt."""
     row = find(database, "claims", claim_id)
     require_status(row, "waiting")
     if row["attempts"]:
         add_step(database, claim_id, "attempt", f"Attempt {row['attempts'] + 1}")
     database.execute(
-        "UPDATE claims SET status = 'in_progress' WHERE id = ?", (claim_id,)
+        "UPDATE claims SET status = 'in_progress', run_id = ?, thread_id = ? "
+        "WHERE id = ?",
+        (start.run_id, f"{claim_id}-{uuid.uuid4().hex[:8]}", claim_id),
     )
     return claim_view(find(database, "claims", claim_id))
 

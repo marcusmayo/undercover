@@ -11,7 +11,9 @@ from langchain.agents.middleware import (
     ModelRetryMiddleware,
     ToolRetryMiddleware,
 )
+from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
+from langfuse.langchain import CallbackHandler
 from pydantic import SecretStr
 
 load_dotenv(override=True)
@@ -77,3 +79,13 @@ def retries() -> list[AgentMiddleware[Any, Any, Any]]:
         ),
         ToolRetryMiddleware(max_retries=2, initial_delay=RETRY_DELAY),
     ]
+
+
+def tracing(thread_id: str) -> RunnableConfig:
+    """Trace a claim's thread in Langfuse, when the Langfuse keys are set."""
+    if not os.getenv("LANGFUSE_SECRET_KEY"):
+        return {}
+    return {
+        "callbacks": [CallbackHandler()],
+        "metadata": {"langfuse_session_id": thread_id},
+    }

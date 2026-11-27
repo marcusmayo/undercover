@@ -9,12 +9,53 @@ from langchain.agents.middleware import AgentMiddleware, ModelCallLimitMiddlewar
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from langchain_core.tools import tool
+from pydantic import BaseModel, Field
 
-from agent.common import api, call, instructions, retries
+from agent.common import api, call, instructions, retries, tracing
 
 CALL_LIMIT = 25
 STEP_LENGTH = 400
 Document = Literal["policy-wording", "claims-manual"]
+Benefit = Literal[
+    "trip_cancellation",
+    "trip_interruption",
+    "trip_delay",
+    "baggage_delay",
+    "baggage",
+    "passport",
+    "emergency_medical",
+]
+
+
+class Line(BaseModel):
+    """One covered item or expense on a claim."""
+
+    description: str = Field(description="What the item or expense is")
+    amount: float = Field(
+        description="The total claimed for the line in US dollars, before any "
+        "limits. For several items, the total for all of them"
+    )
+    quantity: int = Field(
+        default=1,
+        ge=1,
+        description="How many separate items the line holds, such as 3 for three "
+        "shirts. A pair or a set is one item",
+    )
+    kind: Literal[
+        "item", "electronics", "cash", "expense", "hotel", "meals_without_receipts"
+    ] = Field(
+        description="item: a belonging, or a pair or set that counts as one item. "
+        "electronics: only a phone, tablet, laptop, camera or its lens, e-reader or "
+        "smartwatch; any other device is an item. cash: cash that was lost or "
+        "stolen. expense: any other cost with a receipt, such as a medical bill, a "
+        "meal, a taxi, a fee or a prepaid trip cost. hotel: a hotel during a trip "
+        "delay. meals_without_receipts: meals during a trip delay with no receipts."
+    )
+    nights: int = Field(default=0, description="For a hotel, the number of nights")
+    hours: float = Field(
+        default=0,
+        description="For meals without receipts, the length of the delay in hours",
+    )
 
 
 @tool
@@ -47,6 +88,28 @@ def read_section(document: Document, number: str) -> str:
     return call("GET", f"/api/documents/{document}/sections/{number}")
 
 
+@tool(parse_docstring=True)
+def calculate_payout(
+    policy_id: str, benefit: Benefit, lines: list[Line], paid_by_others: float
+) -> str:
+    """Work out the payout on an approved claim with UnderCover's payout rules.
+
+    Args:
+        policy_id: The customer's policy id
+        benefit: The benefit the claim is paid under
+        lines: The covered items and expenses, one for each line of the claim, with
+            any excluded ones left out. A pair or a set counts as one item
+        paid_by_others: Anything a carrier, hotel or other party has paid or
+            refunded for the same loss, or 0
+    """
+    body = {
+        "benefit": benefit,
+        "lines": [Line.model_validate(line).model_dump() for line in lines],
+        "paid_by_others": paid_by_others,
+    }
+    return call("POST", f"/api/policies/{policy_id}/payout", body)
+
+
 @tool
 def record_decision(
     claim_id: str,
@@ -77,6 +140,7 @@ TOOLS = [
     get_claim_history,
     list_sections,
     read_section,
+    calculate_payout,
     record_decision,
     pay_claim,
 ]
@@ -101,7 +165,7 @@ def steps(message: BaseMessage) -> Iterator[tuple[str, str]]:
             yield "tool_call", f"{call_['name']}({json.dumps(call_['args'])})"
 
 
-def decide(claim_id: str, llm: BaseChatModel) -> None:
+def decide(claim_id: str, thread_id: str, llm: BaseChatModel) -> None:
     """Let a fresh claim agent work a started claim, posting each step to the claim."""
     limit: AgentMiddleware[Any, Any, Any] = ModelCallLimitMiddleware(
         run_limit=CALL_LIMIT
@@ -114,7 +178,7 @@ def decide(claim_id: str, llm: BaseChatModel) -> None:
     )
     for update in agent.stream(
         {"messages": [{"role": "user", "content": f"Please decide claim {claim_id}."}]},
-        config={"recursion_limit": 4 * CALL_LIMIT},
+        config=tracing(thread_id) | {"recursion_limit": 4 * CALL_LIMIT},
         stream_mode="updates",
     ):
         for node in update.values():
@@ -141,17 +205,17 @@ def outcome(claim: dict[str, Any]) -> str:
     return f"{line}, ${claim['payout']:,.2f}, {paid}"
 
 
-def work_claim(claim_id: str, llm: BaseChatModel) -> str:
+def work_claim(run_id: int, claim_id: str, llm: BaseChatModel) -> str:
     """Work one waiting claim with a fresh claim agent and report the outcome in a line.
 
     It never raises: a claim that fails before it is decided is released, which puts
     it back in the queue or, on its second failure, leaves it for a handler.
     """
-    started = call("POST", f"/api/claims/{claim_id}/start")
+    started = call("POST", f"/api/claims/{claim_id}/start", {"run_id": run_id})
     if started.startswith("Refused"):
         return started
     try:
-        decide(claim_id, llm)
+        decide(claim_id, json.loads(started)["thread_id"], llm)
         problem = "the agent finished without recording a decision"
     except Exception as error:
         problem = f"the agent stopped with an error: {error}"

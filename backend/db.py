@@ -31,6 +31,8 @@ CREATE TABLE claims (
     record TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'waiting',
     attempts INTEGER NOT NULL DEFAULT 0,
+    run_id INTEGER,
+    thread_id TEXT,
     decision TEXT,
     payout REAL,
     reason TEXT,
