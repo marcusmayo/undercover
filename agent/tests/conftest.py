@@ -13,7 +13,7 @@ DOWN = [RuntimeError("model unavailable")] * 3
 
 
 class StubModel(GenericFakeChatModel):
-    """A chat model that gives scripted replies, or raises a scripted error."""
+    """A chat model that gives scripted replies, or raises a scripted error or stop."""
 
     seen: list = []
 
@@ -23,7 +23,7 @@ class StubModel(GenericFakeChatModel):
     def _generate(self, messages, *args, **kwargs):
         self.seen.append(messages)
         reply = next(self.messages)
-        if isinstance(reply, Exception):
+        if isinstance(reply, BaseException):
             raise reply
         self.messages = iter([reply, *self.messages])
         return super()._generate(messages, *args, **kwargs)
@@ -50,7 +50,7 @@ def decision(claim_id="CLM-1001", payout=420.0):
 
 def decided(claim_id="CLM-1001"):
     """A claim agent's replies that decide a claim straight away."""
-    return [decision(claim_id, 100.0), AIMessage(content=f"Approved {claim_id}.")]
+    return [decision(claim_id, 100.0)]
 
 
 @pytest.fixture

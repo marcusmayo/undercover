@@ -1,13 +1,14 @@
 import inspect
+import json
 
 import httpx
 import pytest
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, ToolMessage
+from langgraph.checkpoint.memory import InMemorySaver
 
-from agent import claim, common
+from agent import claim, common, graph, tools
 from agent.tests.conftest import DOWN, decided, decision, stub, tool_call
-
-RUN = {"run_id": 1}
+from backend import db
 
 READS = [
     tool_call("get_claim", claim_id="CLM-1001"),
@@ -17,17 +18,6 @@ READS = [
     tool_call("read_section", document="policy-wording", number="3"),
     tool_call("read_section", document="claims-manual", number="9"),
 ]
-
-
-def status(client, claim_id="CLM-1001"):
-    return client.get(f"/api/claims/{claim_id}").json()["status"]
-
-
-def steps(client, kind=None):
-    found = client.get("/api/claims/CLM-1001/steps").json()
-    return [s["content"] for s in found if kind in (None, s["kind"])]
-
-
 PAYOUT = tool_call(
     "calculate_payout",
     policy_id="POL-2001",
@@ -38,18 +28,58 @@ PAYOUT = tool_call(
     ],
     paid_by_others=0,
 )
+DECLINE = tool_call(
+    "record_decision",
+    claim_id="CLM-1001",
+    decision="decline",
+    payout=0,
+    reason="Not covered.",
+    policy_section="9. General exclusions",
+)
+
+
+def get(client, claim_id="CLM-1001"):
+    return client.get(f"/api/claims/{claim_id}").json()
+
+
+def steps(client, kind=None):
+    found = client.get("/api/claims/CLM-1001/steps").json()
+    return [s["content"] for s in found if kind in (None, s["kind"])]
+
+
+def work(llm, claim_id="CLM-1001"):
+    return claim.work_claim(1, claim_id, llm)
+
+
+def saved(claim_id="CLM-1001"):
+    """The claim thread's saved state."""
+    return graph.build(stub(), "").get_state(graph.thread(get_thread(claim_id)))
+
+
+def get_thread(claim_id):
+    with db.engine().connect() as database:
+        return db.scalar(
+            database, "SELECT thread_id FROM claims WHERE id = :id", id=claim_id
+        )
+
+
+def set_limit(limit):
+    with db.engine().begin() as database:
+        company = json.loads(db.setting(database, "company"))
+        company["payout_approval_limit"] = limit
+        db.run(
+            database,
+            "UPDATE settings SET content = :content WHERE name = 'company'",
+            content=json.dumps(company),
+        )
 
 
 def test_full_claim(client):
-    llm = stub(
-        *READS,
-        PAYOUT,
-        decision(),
-        tool_call("pay_claim", claim_id="CLM-1001", amount=420.0),
-        AIMessage(content="Approved and paid $420.00."),
-    )
-    assert claim.work_claim(1, "CLM-1001", llm) == "CLM-1001: approve, $420.00, paid"
-    assert client.get("/api/claims/CLM-1001").json()["paid_amount"] == 420.0
+    llm = stub(*READS, PAYOUT, decision())
+    assert work(llm) == "CLM-1001: approve, $420.00, paid"
+    paid = get(client)
+    assert paid["paid_amount"] == 420.0
+    assert paid["status"] == "decided"
     calls = [s.split("(")[0] for s in steps(client, "tool_call")]
     assert calls == [
         "get_claim",
@@ -60,7 +90,6 @@ def test_full_claim(client):
         "read_section",
         "calculate_payout",
         "record_decision",
-        "pay_claim",
     ]
     assert '"payout":420.0' in steps(client, "tool_result")[6]
     assert steps(client, "read") == [
@@ -68,7 +97,8 @@ def test_full_claim(client):
         "Claims manual, 9. Repeat claims",
     ]
     assert steps(client, "tool_result")[0].endswith("...")
-    assert steps(client)[-1] == "Approved and paid $420.00."
+    assert steps(client)[-1] == "Paid $420.00."
+    assert len(llm.seen) == 8
 
 
 def test_a_refused_section_is_not_a_read(client):
@@ -76,102 +106,155 @@ def test_a_refused_section_is_not_a_read(client):
         tool_call("read_section", document="claims-manual", number="99"),
         *decided(),
     )
-    claim.work_claim(1, "CLM-1001", llm)
+    work(llm)
     assert steps(client, "read") == []
     assert "read_section: Refused: The claims manual has no section 99" in steps(
         client, "tool_result"
     )
 
 
-def test_a_failure_puts_the_claim_back(client):
-    llm = stub(tool_call("get_claim", claim_id="CLM-1001"), *DOWN)
-    assert claim.work_claim(1, "CLM-1001", llm) == (
+def test_a_refused_payout_comes_back_to_the_model(client):
+    bad = tool_call(
+        "calculate_payout",
+        policy_id="POL-9999",
+        benefit="baggage",
+        lines=[{"description": "Bag", "amount": 50.0, "kind": "item"}],
+        paid_by_others=0,
+    )
+    llm = stub(bad, *decided())
+    work(llm)
+    assert "calculate_payout: Refused: POL-9999 was not found" in steps(
+        client, "tool_result"
+    )
+    assert isinstance(llm.seen[1][-1], ToolMessage)
+
+
+def test_a_decline_ends_without_a_payment(client):
+    llm = stub(DECLINE)
+    assert work(llm) == "CLM-1001: decline"
+    assert get(client)["paid_at"] is None
+    assert saved().next == ()
+
+
+def test_the_pause_before_a_payout_over_the_limit(client):
+    llm = stub(decision(payout=1150.0))
+    assert work(llm) == (
+        "CLM-1001: approve, $1,150.00, waiting for a handler's sign-off"
+    )
+    held = get(client)
+    assert held["status"] == "awaiting_signoff"
+    assert held["paid_at"] is None
+    state = saved()
+    assert state.next == ("signoff",)
+    assert state.interrupts[0].value == {"claim_id": "CLM-1001", "payout": 1150.0}
+
+
+def test_the_graph_follows_the_backend_not_its_own_limit(client):
+    set_limit(2000)
+    assert work(stub(decision(payout=1250.0))) == "CLM-1001: approve, $1,250.00, paid"
+
+
+def test_a_signoff_resumes_the_claim_and_pays_it_once(client):
+    work(stub(decision(payout=1150.0)))
+    thread_id = get_thread("CLM-1001")
+    signed = client.post("/api/claims/CLM-1001/signoff", json={"handler_id": "HND-01"})
+    assert signed.json()["status"] == "in_progress"
+    resumer = stub()
+    graph.run("CLM-1001", thread_id, resumer)
+    paid = get(client)
+    assert paid["status"] == "decided"
+    assert paid["paid_amount"] == 1150.0
+    assert paid["signed_off_by"] == "HND-01"
+    assert paid["signed_off_at"]
+    assert resumer.seen == []
+    assert saved().values["signed_off_by"] == "HND-01"
+    graph.run("CLM-1001", thread_id, stub())
+    assert get(client)["paid_at"] == paid["paid_at"]
+    assert steps(client).count("Paid $1,150.00.") == 1
+
+
+def test_a_claim_not_signed_off_keeps_waiting(client):
+    work(stub(decision(payout=1150.0)))
+    graph.run("CLM-1001", get_thread("CLM-1001"), stub())
+    assert get(client)["status"] == "awaiting_signoff"
+    assert saved().next == ("signoff",)
+
+
+def test_a_claim_stopped_partway_carries_on_from_its_last_step(client):
+    first = stub(*READS[:2], KeyboardInterrupt())
+    with pytest.raises(KeyboardInterrupt):
+        work(first)
+    stopped = get(client)
+    assert stopped["status"] == "in_progress"
+    assert stopped["attempts"] == 0
+    assert saved().next == ("agent",)
+
+    second = stub(decision())
+    line = claim.carry_on("CLM-1001", stopped["thread_id"], second)
+    assert line == "CLM-1001: approve, $420.00, paid"
+    assert len(second.seen) == 1
+    carried = [m.content for m in second.seen[0] if isinstance(m, ToolMessage)]
+    assert len(carried) == 2
+    done = get(client)
+    assert done["attempts"] == 0
+    assert done["thread_id"] == stopped["thread_id"]
+    assert steps(client, "attempt") == []
+    calls = [s.split("(")[0] for s in steps(client, "tool_call")]
+    assert calls == ["get_claim", "get_policy", "record_decision"]
+
+
+def test_a_claim_that_fails_with_an_error_starts_afresh(client):
+    assert work(stub(READS[0], *DOWN)) == (
         "CLM-1001: failed (the agent stopped with an error: model unavailable), "
         "back in the queue"
     )
-    assert status(client) == "waiting"
+    failed = get(client)
+    assert failed["status"] == "waiting"
     assert steps(client, "error") == [
         "The agent stopped with an error: model unavailable"
     ]
-
-
-def test_a_second_failure_leaves_the_claim_for_a_handler(client):
-    claim.work_claim(1, "CLM-1001", stub(*DOWN))
-    line = claim.work_claim(1, "CLM-1001", stub(*DOWN))
-    assert line.endswith("left for a handler")
-    assert status(client) == "needs_handler"
+    again = stub(*decided())
+    work(again)
+    assert get(client)["thread_id"] != failed["thread_id"]
+    assert [m.type for m in again.seen[0]] == ["system", "human"]
     assert "Attempt 2" in steps(client, "attempt")
 
 
+def test_a_second_failure_leaves_the_claim_for_a_handler(client):
+    work(stub(*DOWN))
+    assert work(stub(*DOWN)).endswith("left for a handler")
+    assert get(client)["status"] == "needs_handler"
+
+
 def test_no_decision_puts_the_claim_back(client):
-    line = claim.work_claim(1, "CLM-1001", stub(AIMessage(content="Decline, $0.")))
-    assert line == (
+    assert work(stub(AIMessage(content="Decline, $0."))) == (
         "CLM-1001: failed (the agent finished without recording a decision), "
         "back in the queue"
     )
-    assert status(client) == "waiting"
+    assert get(client)["status"] == "waiting"
 
 
 def test_the_call_limit_ends_a_claim(client, monkeypatch):
-    monkeypatch.setattr(claim, "CALL_LIMIT", 2)
-    loop = [tool_call("get_claim", claim_id="CLM-1001")] * 3
-    line = claim.work_claim(1, "CLM-1001", stub(*loop))
-    assert line.endswith("back in the queue")
+    monkeypatch.setattr(graph, "CALL_LIMIT", 2)
+    loop = [tool_call("get_claim", claim_id="CLM-1001") for _ in range(3)]
+    assert work(stub(*loop)).endswith("back in the queue")
     assert len(steps(client, "tool_call")) == 2
+
+
+def test_the_call_limit_is_30():
+    assert graph.CALL_LIMIT == 30
 
 
 def test_a_transient_error_is_retried(client):
     llm = stub(RuntimeError("timed out"), *decided())
-    assert claim.work_claim(1, "CLM-1001", llm) == (
-        "CLM-1001: approve, $100.00, not paid yet"
-    )
+    assert work(llm) == "CLM-1001: approve, $100.00, paid"
     assert steps(client, "error") == []
 
 
-def test_a_large_payout_waits_for_signoff(client):
-    llm = stub(
-        decision(payout=1150.0),
-        tool_call("pay_claim", claim_id="CLM-1001", amount=1150.0),
-        AIMessage(content="Approved; the payment waits for sign-off."),
-    )
-    assert claim.work_claim(1, "CLM-1001", llm) == (
-        "CLM-1001: approve, $1,150.00, waiting for a handler's sign-off"
-    )
-    assert client.get("/api/claims/CLM-1001").json()["paid_at"] is None
-    assert steps(client, "tool_result")[-1] == (
-        "pay_claim: Refused: The payout is over $1,000.00, so the payment waits "
-        "for a handler's sign-off"
-    )
-
-
-def test_a_decline_is_reported_without_a_payout(client):
-    decline = tool_call(
-        "record_decision",
-        claim_id="CLM-1001",
-        decision="decline",
-        payout=0,
-        reason="Not covered.",
-        policy_section="9. General exclusions",
-    )
-    line = claim.work_claim(
-        1, "CLM-1001", stub(decline, AIMessage(content="Declined."))
-    )
-    assert line == "CLM-1001: decline"
-
-
-def test_an_unpaid_approval(client):
-    llm = stub(decision(), AIMessage(content="Approved."))
-    assert claim.work_claim(1, "CLM-1001", llm) == (
-        "CLM-1001: approve, $420.00, not paid yet"
-    )
-
-
 def test_a_claim_not_waiting_is_refused(client):
-    client.post("/api/claims/CLM-1001/start", json=RUN)
+    client.post("/api/claims/CLM-1001/start", json={"run_id": 1})
     llm = stub()
-    assert claim.work_claim(1, "CLM-1001", llm) == (
-        "Refused: CLM-1001 is in_progress, not waiting"
-    )
+    assert work(llm) == "Refused: CLM-1001 is in_progress, not waiting"
     assert llm.seen == []
 
 
@@ -180,12 +263,61 @@ def test_instructions_come_from_the_backend(client, monkeypatch, tmp_path):
     (tmp_path / "queue.md").write_text("Served queue instructions.")
     monkeypatch.setattr("backend.main.INSTRUCTIONS", tmp_path)
     llm = stub(*decided())
-    claim.work_claim(1, "CLM-1001", llm)
+    work(llm)
     assert llm.seen[0][0].content == "Served claim instructions."
 
 
+def test_each_claim_is_traced_in_its_own_session(client, monkeypatch):
+    threads = []
+    monkeypatch.setattr(graph, "tracing", lambda thread: threads.append(thread) or {})
+    work(stub(decision(payout=1150.0)))
+    client.post("/api/claims/CLM-1001/signoff", json={"handler_id": "HND-01"})
+    graph.run("CLM-1001", get_thread("CLM-1001"), stub())
+    assert threads == [get_thread("CLM-1001")] * 2
+
+
+def test_tracing(monkeypatch):
+    monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
+    assert common.tracing("CLM-1001-abc") == {}
+    monkeypatch.setattr(common, "CallbackHandler", lambda: "handler")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
+    assert common.tracing("CLM-1001-abc") == {
+        "callbacks": ["handler"],
+        "metadata": {"langfuse_session_id": "CLM-1001-abc"},
+    }
+
+
+def test_checkpoints_in_memory_without_database_url(monkeypatch):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    assert isinstance(graph.checkpointer.__wrapped__(), InMemorySaver)
+
+
+def test_checkpoints_in_supabase_with_database_url(monkeypatch):
+    made = {}
+
+    class Saver:
+        def __init__(self, pool):
+            made["pool"] = pool
+
+        def setup(self):
+            made["setup"] = True
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@pooler:5432/postgres")
+    monkeypatch.setattr(graph, "ConnectionPool", lambda url, **options: options)
+    monkeypatch.setattr(graph, "PostgresSaver", Saver)
+    graph.checkpointer.__wrapped__()
+    assert made["setup"]
+    assert made["pool"]["max_size"] == 4
+    assert made["pool"]["kwargs"] == {
+        "autocommit": True,
+        "prepare_threshold": 0,
+        "row_factory": graph.dict_row,
+        "options": "-c search_path=undercover",
+    }
+
+
 def test_tools_only_call_the_backend():
-    assert [t.name for t in claim.TOOLS] == [
+    assert [t.name for t in tools.TOOLS] == [
         "get_claim",
         "get_policy",
         "get_claim_history",
@@ -193,9 +325,8 @@ def test_tools_only_call_the_backend():
         "read_section",
         "calculate_payout",
         "record_decision",
-        "pay_claim",
     ]
-    for module in [claim, common]:
+    for module in [claim, common, graph, tools]:
         source = inspect.getsource(module)
         assert "data/" not in source
         assert "open(" not in source
@@ -222,36 +353,3 @@ def test_model(monkeypatch):
     monkeypatch.setenv("MODEL_NAME", "openrouter/free")
     assert common.model().model_name == "openrouter/free"
     assert common.model().extra_body is None
-
-
-def test_a_refused_payout_comes_back_to_the_model(client):
-    bad = tool_call(
-        "calculate_payout",
-        policy_id="POL-9999",
-        benefit="baggage",
-        lines=[{"description": "Bag", "amount": 50.0, "kind": "item"}],
-        paid_by_others=0,
-    )
-    claim.work_claim(1, "CLM-1001", stub(bad, *decided()))
-    assert "calculate_payout: Refused: POL-9999 was not found" in steps(
-        client, "tool_result"
-    )
-
-
-def test_each_claim_is_traced_in_its_own_session(client, monkeypatch):
-    configs = []
-    monkeypatch.setattr(claim, "tracing", lambda thread: configs.append(thread) or {})
-    claim.work_claim(1, "CLM-1001", stub(*decided()))
-    thread_id = client.get("/api/claims/CLM-1001").json()["thread_id"]
-    assert configs == [thread_id]
-
-
-def test_tracing(monkeypatch):
-    monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
-    assert common.tracing("CLM-1001-abc") == {}
-    monkeypatch.setattr(common, "CallbackHandler", lambda: "handler")
-    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-test")
-    assert common.tracing("CLM-1001-abc") == {
-        "callbacks": ["handler"],
-        "metadata": {"langfuse_session_id": "CLM-1001-abc"},
-    }

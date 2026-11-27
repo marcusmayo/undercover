@@ -176,21 +176,21 @@ Move `backend/db.py` and every query in `backend/main.py` to SQLAlchemy Core. Ad
 
 Build `agent/graph.py`: `ClaimState`, the nodes `agent`, `tools`, `signoff` and `pay`, the edges, the retry policies, the 30-call cap and the checkpointer (`PostgresSaver` on a pool of 4 with `DATABASE_URL`, `InMemorySaver` without). Build the entry point `run(claim_id, thread_id)`. Remove `pay_claim` from the tools and update `claim.md`. Change the backend: `sign_off` records the sign-off and moves the claim to `in_progress`; `pay_claim` moves a signed-off claim to `decided`; `release_claim` refuses a claim with a decision.
 
-- [ ] The claim agent's tools are exactly the seven listed above; `pay_claim` is not among them
-- [ ] An approval within the limit (stub): the graph records the decision, then `pay` pays it; the claim is `decided` and paid, with a "Paid" step
-- [ ] A decline (stub): the graph ends after the decision and nothing is paid
-- [ ] The pause: an approval over $1,000 (stub) leaves the claim `awaiting_signoff`, unpaid, with the thread waiting at `signoff`; `work_claim` returns `..., waiting for a handler's sign-off`
-- [ ] The graph follows the backend: a test that raises the limit in the settings sees the same $1,250 approval go straight to `pay`
-- [ ] The resume: after `sign_off`, the claim is `in_progress` with the handler and time; `run` on its thread resumes at `signoff`, pays once and the claim is `decided` with `paid_at`, `signed_off_by` and `signed_off_at` set; a second `run` changes nothing
-- [ ] Stopped partway: a stub that raises `KeyboardInterrupt` after the claim's first tool calls leaves the claim `in_progress`; `run` on the same thread carries on from the last checkpoint without repeating the model calls before it, with the attempts unchanged and one decision
-- [ ] A failure: a stub that raises an error partway releases the claim to `waiting`; its next attempt has a new thread and starts from the beginning
-- [ ] 30 model calls without a decision end the claim, and it is released
-- [ ] A transient model error (fails once, then succeeds) is retried by the retry policy and the claim is decided
-- [ ] Steps: a stub run posts the same kinds of step as before (`tool_call`, `tool_result`, `message`, `read`), and refusals come back to the model as text
-- [ ] `pay_claim` over the limit without a sign-off is still refused, whatever calls it
-- [ ] `release_claim` on a claim with a decision returns 409
-- [ ] The queue agent's tests still pass with `work_claim` on the graph
-- [ ] `npm run check:python` passes
+- [x] The claim agent's tools are exactly the seven listed above; `pay_claim` is not among them
+- [x] An approval within the limit (stub): the graph records the decision, then `pay` pays it; the claim is `decided` and paid, with a "Paid" step
+- [x] A decline (stub): the graph ends after the decision and nothing is paid
+- [x] The pause: an approval over $1,000 (stub) leaves the claim `awaiting_signoff`, unpaid, with the thread waiting at `signoff`; `work_claim` returns `..., waiting for a handler's sign-off`
+- [x] The graph follows the backend: a test that raises the limit in the settings sees the same $1,250 approval go straight to `pay`
+- [x] The resume: after `sign_off`, the claim is `in_progress` with the handler and time; `run` on its thread resumes at `signoff`, pays once and the claim is `decided` with `paid_at`, `signed_off_by` and `signed_off_at` set; a second `run` changes nothing
+- [x] Stopped partway: a stub that raises `KeyboardInterrupt` after the claim's first tool calls leaves the claim `in_progress`; `run` on the same thread carries on from the last checkpoint without repeating the model calls before it, with the attempts unchanged and one decision
+- [x] A failure: a stub that raises an error partway releases the claim to `waiting`; its next attempt has a new thread and starts from the beginning
+- [x] 30 model calls without a decision end the claim, and it is released
+- [x] A transient model error (fails once, then succeeds) is retried by the retry policy and the claim is decided
+- [x] Steps: a stub run posts the same kinds of step as before (`tool_call`, `tool_result`, `message`, `read`), and refusals come back to the model as text
+- [x] `pay_claim` over the limit without a sign-off is still refused, whatever calls it
+- [x] `release_claim` on a claim with a decision returns 409
+- [x] The queue agent's tests still pass with `work_claim` on the graph
+- [x] `npm run check:python` passes
 
 ## Phase 4: the agent's service
 

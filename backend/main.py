@@ -449,7 +449,10 @@ def release(database: Connection, claim_id: str, problem: str) -> None:
 @app.post("/api/claims/{claim_id}/release", operation_id="release_claim")
 def release_claim(claim_id: str, failure: Problem, database: Db) -> dict[str, Any]:
     """Record a failed attempt on a claim; a second failure leaves it for a handler."""
-    require_status(find(database, "claims", claim_id), "in_progress")
+    row = find(database, "claims", claim_id)
+    require_status(row, "in_progress")
+    if row["decision"] is not None:
+        raise HTTPException(409, f"{claim_id} is decided, so it stays as it is")
     release(database, claim_id, failure.problem)
     return claim_view(find(database, "claims", claim_id))
 
@@ -533,7 +536,8 @@ def pay_claim(claim_id: str, payment: Payment, database: Db) -> dict[str, Any]:
         raise HTTPException(409, problem)
     db.run(
         database,
-        "UPDATE claims SET paid_amount = :amount, paid_at = :at WHERE id = :id",
+        "UPDATE claims SET status = 'decided', paid_amount = :amount, paid_at = :at "
+        "WHERE id = :id",
         amount=payment.amount,
         at=db.now(),
         id=claim_id,
@@ -543,14 +547,14 @@ def pay_claim(claim_id: str, payment: Payment, database: Db) -> dict[str, Any]:
 
 @app.post("/api/claims/{claim_id}/signoff", operation_id="sign_off")
 def sign_off(claim_id: str, signoff: SignOff, database: Db) -> dict[str, Any]:
-    """Sign off a payout over the approval limit, as a handler with authority."""
+    """Sign off a payout over the approval limit; the agent then pays it."""
     require_status(find(database, "claims", claim_id), "awaiting_signoff")
     handler = json.loads(find(database, "handlers", signoff.handler_id)["record"])
     if not handler["can_approve_over_limit"]:
         raise HTTPException(403, f"{handler['name']} can't sign off large payouts")
     db.run(
         database,
-        "UPDATE claims SET status = 'decided', signed_off_by = :handler, "
+        "UPDATE claims SET status = 'in_progress', signed_off_by = :handler, "
         "signed_off_at = :at WHERE id = :id",
         handler=signoff.handler_id,
         at=db.now(),

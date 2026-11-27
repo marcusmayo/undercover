@@ -151,15 +151,28 @@ def test_a_different_decision_is_refused(client, different):
     assert client.get("/api/claims/CLM-1001").json()["payout"] == 420.0
 
 
-def test_signoff_releases_payment(client):
+def test_signoff_puts_the_claim_in_progress_until_it_is_paid(client):
     decide(client, APPROVE_LARGE)
     claim = client.post(
         "/api/claims/CLM-1001/signoff", json={"handler_id": "HND-01"}
     ).json()
-    assert claim["status"] == "decided"
+    assert claim["status"] == "in_progress"
     assert claim["signed_off_by"] == "HND-01"
     assert claim["signed_off_at"]
-    assert pay(client, 1150.0).json()["paid_amount"] == 1150.0
+    assert claim["paid_at"] is None
+    paid = pay(client, 1150.0).json()
+    assert paid["paid_amount"] == 1150.0
+    assert paid["status"] == "decided"
+
+
+def test_a_signed_off_claim_is_never_released(client):
+    decide(client, APPROVE_LARGE)
+    client.post("/api/claims/CLM-1001/signoff", json={"handler_id": "HND-01"})
+    response = client.post(
+        "/api/claims/CLM-1001/release", json={"problem": "The payment failed"}
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "CLM-1001 is decided, so it stays as it is"
 
 
 def test_signoff_needs_a_claim_awaiting_signoff(client):
