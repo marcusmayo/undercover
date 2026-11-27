@@ -5,7 +5,7 @@ from langchain_core.messages import AIMessage
 
 from agent import queue
 from agent.__main__ import main
-from agent.tests.conftest import DOWN, decided, stub, tool_call
+from agent.tests.conftest import DOWN, decided, decision, stub, tool_call
 
 
 def todos(*items):
@@ -171,7 +171,8 @@ def test_finish_is_refused_while_a_retry_is_due(client):
     assert tool_results(llm, "finish_run")[0].startswith("Refused: CLM-1001")
 
 
-def test_a_queue_agent_that_raises_fails_the_run(client):
+def test_a_queue_agent_that_raises_fails_the_run(client, monkeypatch):
+    monkeypatch.setattr(queue.claim, "carry_on_all", lambda llm: [])
     run_id = start(client, 2)
     client.post("/api/claims/CLM-1003/start", json={"run_id": run_id})
     queue.run_queue(run_id, stub(*DOWN))
@@ -207,6 +208,56 @@ def test_a_one_claim_run(client):
     assert statuses(client)["CLM-1001"] == "waiting"
     assert statuses(client)["CLM-1003"] == "decided"
     assert llm.seen[0][1].content == "Please work claim CLM-1003 only."
+
+
+def test_a_run_first_pays_a_claim_signed_off_while_the_agent_was_away(client):
+    held = start(client, 1)
+    queue.run_queue(held, stub(work("CLM-1003"), decision("CLM-1003", 3750.0), *FINISH))
+    client.post("/api/claims/CLM-1003/signoff", json={"handler_id": "HND-01"})
+    assert statuses(client)["CLM-1003"] == "in_progress"
+    run_id = start(client, 1)
+    queue.run_queue(run_id, stub(work("CLM-1001"), *decided("CLM-1001"), *FINISH))
+    assert client.get("/api/claims/CLM-1003").json()["paid_amount"] == 3750.0
+    steps = client.get("/api/claims/CLM-1003/steps").json()
+    assert steps[-1]["content"] == "Paid $3,750.00."
+    assert statuses(client)["CLM-1001"] == "decided"
+
+
+def test_a_stopped_run_is_finished_by_carrying_it_on(client):
+    run_id = start(client, 2)
+    stopper = stub(
+        work("CLM-1001"),
+        *decided("CLM-1001"),
+        work("CLM-1002"),
+        tool_call("get_claim", claim_id="CLM-1002"),
+        KeyboardInterrupt(),
+    )
+    with pytest.raises(KeyboardInterrupt):
+        queue.run_queue(run_id, stopper)
+    assert run(client, run_id)["status"] == "running"
+    assert statuses(client)["CLM-1002"] == "in_progress"
+
+    llm = stub(
+        decided("CLM-1002")[0],
+        tool_call("list_waiting_claims"),
+        work("CLM-1003"),
+        *FINISH,
+    )
+    queue.run_queue(run_id, llm)
+    listing = json.loads(tool_results(llm, "list_waiting_claims")[0])
+    assert listing["worked_so_far"] == ["CLM-1001", "CLM-1002"]
+    assert listing["new_claims_left"] == 0
+    assert tool_results(llm, "work_claim")[0] == (
+        "Refused: the run has already worked its cap of 2"
+    )
+    found = statuses(client)
+    assert (found["CLM-1001"], found["CLM-1002"], found["CLM-1003"]) == (
+        "decided",
+        "decided",
+        "waiting",
+    )
+    assert client.get("/api/claims/CLM-1002").json()["attempts"] == 0
+    assert run(client, run_id)["status"] == "finished"
 
 
 def test_queue_tools():

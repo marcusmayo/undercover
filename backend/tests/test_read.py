@@ -41,6 +41,7 @@ def test_list_claims_fields(client):
         "status": "waiting",
         "decision": None,
         "attempts": 0,
+        "run_id": None,
     }
 
 
@@ -164,14 +165,14 @@ def test_every_operation_is_documented(client):
                 assert set(model.get("required", [])) == set(model["properties"])
 
 
-def test_startup_closes_an_interrupted_run(client):
+def test_a_restart_of_the_backend_leaves_the_agents_work_alone(client):
     client.post("/api/runs", json={"cap": 1})
     client.post("/api/claims/CLM-1001/start", json=RUN)
     with TestClient(app) as restarted:
-        assert restarted.get("/api/runs/latest").json()["status"] == "failed"
+        assert restarted.get("/api/runs/latest").json()["status"] == "running"
         claim = restarted.get("/api/claims/CLM-1001").json()
-        assert claim["status"] == "waiting"
-        assert claim["attempts"] == 1
+        assert claim["status"] == "in_progress"
+        assert claim["attempts"] == 0
 
 
 def test_startup_seeds_a_missing_database(tmp_path, monkeypatch):

@@ -1,6 +1,9 @@
+from pathlib import Path
+
+import httpx
 import pytest
 
-from agent import queue as runner
+from backend import main
 
 RUN = {"run_id": 1}
 
@@ -11,11 +14,9 @@ TODOS = [
 
 
 @pytest.fixture
-def started(client, monkeypatch):
-    runs = []
-    monkeypatch.delenv("UNDERCOVER_AGENT")
-    monkeypatch.setattr(runner, "run_queue", runs.append)
-    return runs
+def started(client, told):
+    """The runs handed to the agent's service."""
+    return told
 
 
 def test_no_run_yet(client):
@@ -29,7 +30,7 @@ def test_start_run(client, started):
     assert run["claim_id"] is None
     assert run["todos"] == []
     assert run["started_at"]
-    assert started == [run["id"]]
+    assert started == [f"/runs/{run['id']}"]
     assert client.get("/api/runs/latest").json() == run
     assert client.get(f"/api/runs/{run['id']}").json() == run
 
@@ -99,7 +100,7 @@ def test_run_agent_starts_a_one_claim_run(client, started):
     run = client.post("/api/claims/CLM-1001/run").json()
     assert run["claim_id"] == "CLM-1001"
     assert run["cap"] == 1
-    assert started == [run["id"]]
+    assert started == [f"/runs/{run['id']}"]
 
 
 def test_run_agent_needs_a_waiting_claim(client, started):
@@ -108,7 +109,44 @@ def test_run_agent_needs_a_waiting_claim(client, started):
     assert started == []
 
 
-def test_agent_can_be_turned_off(client, started, monkeypatch):
-    monkeypatch.setenv("UNDERCOVER_AGENT", "off")
-    assert client.post("/api/runs", json={"cap": 1}).status_code == 200
-    assert started == []
+def test_a_signoff_is_handed_to_the_agent_once_saved(client, told):
+    client.post("/api/claims/CLM-1003/start", json=RUN)
+    client.post(
+        "/api/claims/CLM-1003/decision",
+        json={
+            "decision": "approve",
+            "payout": 3750.0,
+            "reason": "Covered treatment abroad.",
+            "policy_section": "7. Emergency Medical",
+        },
+    )
+    assert told == []
+    client.post("/api/claims/CLM-1003/signoff", json={"handler_id": "HND-01"})
+    assert told == ["/claims/CLM-1003/resume"]
+
+
+def test_tell_agent_posts_to_the_agents_service(monkeypatch):
+    posted = []
+    monkeypatch.setattr(httpx, "post", lambda url, timeout: posted.append(url))
+    monkeypatch.setenv("UNDERCOVER_AGENT", "http://127.0.0.1:8003")
+    main.tell_agent("/runs/1")
+    monkeypatch.delenv("UNDERCOVER_AGENT")
+    main.tell_agent("/claims/CLM-1001/resume")
+    assert posted == [
+        "http://127.0.0.1:8003/runs/1",
+        "http://127.0.0.1:8002/claims/CLM-1001/resume",
+    ]
+
+
+def test_a_signoff_stands_when_the_agent_cant_be_reached(monkeypatch):
+    def unreachable(url, timeout):
+        raise httpx.ConnectError("refused")
+
+    monkeypatch.setattr(httpx, "post", unreachable)
+    main.tell_agent("/claims/CLM-1001/resume")
+
+
+def test_the_backend_does_not_import_the_agent():
+    source = Path(main.__file__).read_text(encoding="utf-8")
+    assert "import agent" not in source
+    assert "from agent" not in source

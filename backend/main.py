@@ -4,19 +4,20 @@ import json
 import os
 import uuid
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Annotated, Any, Literal, Self
 
+import httpx
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import Connection, RowMapping
 
-import agent.queue as runner
 from backend import db
 from backend.payout import Payout, PayoutRequest, Rules
 
 INSTRUCTIONS = Path(__file__).parent / "instructions"
+AGENT_URL = "http://127.0.0.1:8002"
 MAX_ATTEMPTS = 2
 DOCUMENTS = {
     "policy-wording": ("policy_wording", "Policy wording"),
@@ -40,23 +41,9 @@ DECISION_FIELDS = [
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-    """Seed the database if it is missing, and close any run a restart cut short."""
+    """Seed the database if it is missing."""
     if not db.exists():
         db.seed()
-    with db.engine().begin() as database:
-        db.run(
-            database,
-            "UPDATE runs SET status = 'failed', problem = :problem, finished_at = :at "
-            "WHERE status = 'running'",
-            problem="The backend stopped during the run",
-            at=db.now(),
-        )
-        for row in db.rows(
-            database, "SELECT id FROM claims WHERE status = 'in_progress'"
-        ):
-            release(
-                database, row["id"], "The backend stopped while the claim was worked"
-            )
     yield
 
 
@@ -86,7 +73,7 @@ def health() -> dict[str, str]:
 
 @app.get("/api/claims", operation_id="list_claims")
 def list_claims(database: Db) -> list[dict[str, Any]]:
-    """List the claims queue with each claim's status and attempts."""
+    """List the claims queue with each claim's status, attempts and latest run."""
     keys = ["claim_id", "claim_type", "summary", "amount_claimed", "submitted_on"]
     claims = []
     for row in db.rows(database, "SELECT * FROM claims ORDER BY id"):
@@ -97,6 +84,7 @@ def list_claims(database: Db) -> list[dict[str, Any]]:
                 "status": row["status"],
                 "decision": row["decision"],
                 "attempts": row["attempts"],
+                "run_id": row["run_id"],
             }
         )
     return claims
@@ -241,6 +229,15 @@ class Step(BaseModel):
     content: str
 
 
+def tell_agent(path: str) -> None:
+    """Tell the agent's service about new work.
+
+    If the service can't be reached, the work stands: it catches up when it starts.
+    """
+    with suppress(httpx.TransportError):
+        httpx.post(os.getenv("UNDERCOVER_AGENT", AGENT_URL) + path, timeout=10)
+
+
 def approval_limit(database: Connection) -> float:
     """Return the payout above which a handler must sign off."""
     return json.loads(db.setting(database, "company"))["payout_approval_limit"]
@@ -323,7 +320,7 @@ def begin_run(
     claim_id: str | None,
     cap: int,
 ) -> dict[str, Any]:
-    """Create a run and start the agent on it, unless a run is already going."""
+    """Create a run and hand it to the agent, unless a run is already going."""
     if db.one(database, "SELECT 1 FROM runs WHERE status = 'running'"):
         raise HTTPException(409, "A run is already going; wait for it to finish")
     run_id = db.scalar(
@@ -335,10 +332,8 @@ def begin_run(
         at=db.now(),
     )
     database.commit()
-    row = find_run(database, run_id)
-    if os.getenv("UNDERCOVER_AGENT") != "off":
-        background.add_task(runner.run_queue, row["id"])
-    return run_view(row)
+    background.add_task(tell_agent, f"/runs/{run_id}")
+    return run_view(find_run(database, run_id))
 
 
 @app.post("/api/runs", operation_id="start_run")
@@ -546,7 +541,9 @@ def pay_claim(claim_id: str, payment: Payment, database: Db) -> dict[str, Any]:
 
 
 @app.post("/api/claims/{claim_id}/signoff", operation_id="sign_off")
-def sign_off(claim_id: str, signoff: SignOff, database: Db) -> dict[str, Any]:
+def sign_off(
+    claim_id: str, signoff: SignOff, database: Db, background: BackgroundTasks
+) -> dict[str, Any]:
     """Sign off a payout over the approval limit; the agent then pays it."""
     require_status(find(database, "claims", claim_id), "awaiting_signoff")
     handler = json.loads(find(database, "handlers", signoff.handler_id)["record"])
@@ -560,4 +557,6 @@ def sign_off(claim_id: str, signoff: SignOff, database: Db) -> dict[str, Any]:
         at=db.now(),
         id=claim_id,
     )
+    database.commit()
+    background.add_task(tell_agent, f"/claims/{claim_id}/resume")
     return claim_view(find(database, "claims", claim_id))

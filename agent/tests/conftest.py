@@ -54,11 +54,18 @@ def decided(claim_id="CLM-1001"):
 
 
 @pytest.fixture
-def client(tmp_path, monkeypatch):
+def told(monkeypatch):
+    """What the backend told the agent's service, in place of telling it."""
+    calls = []
+    monkeypatch.setattr("backend.main.tell_agent", calls.append)
+    return calls
+
+
+@pytest.fixture
+def client(tmp_path, monkeypatch, told):
     for name in ["DATABASE_URL", "LANGFUSE_SECRET_KEY", "LANGFUSE_PUBLIC_KEY"]:
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("UNDERCOVER_DB", str(tmp_path / "test.db"))
-    monkeypatch.setenv("UNDERCOVER_AGENT", "off")
     monkeypatch.setattr(common, "RETRY_DELAY", 0)
     db.seed()
     client = TestClient(app)

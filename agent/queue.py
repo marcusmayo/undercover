@@ -110,6 +110,9 @@ def work_queue(run_id: int, llm: BaseChatModel) -> None:
     """Let the queue agent work the run, finishing it if the agent did not."""
     record = api("GET", f"/api/runs/{run_id}")
     run = Run(run_id, record["claim_id"], record["cap"], llm)
+    run.worked = [
+        c["claim_id"] for c in api("GET", "/api/claims") if c["run_id"] == run_id
+    ]
     agent = create_agent(
         llm,
         tools=tools(run),
@@ -134,12 +137,21 @@ def work_queue(run_id: int, llm: BaseChatModel) -> None:
 
 
 def run_queue(run_id: int, llm: BaseChatModel | None = None) -> None:
-    """Run the queue agent; if it fails, release its claims and fail the run."""
+    """Carry on what was left, then run the queue agent.
+
+    If the queue agent fails, release the claims it left undecided and fail the run.
+    """
+    llm = llm or model()
+    claim.carry_on_all(llm)
     try:
-        work_queue(run_id, llm or model())
+        work_queue(run_id, llm)
     except Exception as error:
         for c in api("GET", "/api/claims"):
-            if c["status"] == "in_progress":
+            if (c["status"], c["run_id"], c["decision"]) == (
+                "in_progress",
+                run_id,
+                None,
+            ):
                 api(
                     "POST",
                     f"/api/claims/{c['claim_id']}/release",

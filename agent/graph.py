@@ -68,6 +68,7 @@ def checkpointer() -> BaseCheckpointSaver[Any]:
     pool = ConnectionPool(
         database_url,
         max_size=POOL_SIZE,
+        check=ConnectionPool.check_connection,
         kwargs={
             "autocommit": True,
             "prepare_threshold": 0,

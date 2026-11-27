@@ -190,7 +190,7 @@ def test_a_claim_stopped_partway_carries_on_from_its_last_step(client):
     assert saved().next == ("agent",)
 
     second = stub(decision())
-    line = claim.carry_on("CLM-1001", stopped["thread_id"], second)
+    line = claim.carry_on("CLM-1001", second)
     assert line == "CLM-1001: approve, $420.00, paid"
     assert len(second.seen) == 1
     carried = [m.content for m in second.seen[0] if isinstance(m, ToolMessage)]
@@ -201,6 +201,31 @@ def test_a_claim_stopped_partway_carries_on_from_its_last_step(client):
     assert steps(client, "attempt") == []
     calls = [s.split("(")[0] for s in steps(client, "tool_call")]
     assert calls == ["get_claim", "get_policy", "record_decision"]
+
+
+def test_a_claim_being_worked_is_not_carried_on_twice(client):
+    client.post("/api/claims/CLM-1001/start", json={"run_id": 1})
+    llm = stub()
+    with claim.working("CLM-1001"):
+        assert claim.carry_on("CLM-1001", llm) is None
+    assert llm.seen == []
+    assert not claim.WORKING
+
+
+def test_only_a_claim_in_progress_is_carried_on(client):
+    assert claim.carry_on("CLM-1001", stub()) is None
+    assert get(client)["status"] == "waiting"
+
+
+def test_carry_on_all_picks_up_stopped_and_signed_off_claims(client):
+    with pytest.raises(KeyboardInterrupt):
+        work(stub(READS[0], KeyboardInterrupt()))
+    work(stub(decision("CLM-1003", 3750.0)), "CLM-1003")
+    client.post("/api/claims/CLM-1003/signoff", json={"handler_id": "HND-01"})
+    lines = claim.carry_on_all(stub(DECLINE))
+    assert lines == ["CLM-1001: decline", "CLM-1003: approve, $3,750.00, paid"]
+    assert get(client)["attempts"] == 0
+    assert get(client, "CLM-1003")["paid_amount"] == 3750.0
 
 
 def test_a_claim_that_fails_with_an_error_starts_afresh(client):
@@ -303,11 +328,19 @@ def test_checkpoints_in_supabase_with_database_url(monkeypatch):
             made["setup"] = True
 
     monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@pooler:5432/postgres")
-    monkeypatch.setattr(graph, "ConnectionPool", lambda url, **options: options)
+
+    class Pool:
+        check_connection = "check each connection"
+
+        def __new__(cls, url, **options):
+            return options
+
+    monkeypatch.setattr(graph, "ConnectionPool", Pool)
     monkeypatch.setattr(graph, "PostgresSaver", Saver)
     graph.checkpointer.__wrapped__()
     assert made["setup"]
     assert made["pool"]["max_size"] == 4
+    assert made["pool"]["check"] == "check each connection"
     assert made["pool"]["kwargs"] == {
         "autocommit": True,
         "prepare_threshold": 0,

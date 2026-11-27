@@ -196,17 +196,17 @@ Build `agent/graph.py`: `ClaimState`, the nodes `agent`, `tools`, `signoff` and 
 
 Build `agent/service.py` with `health`, `work_run` and `resume_claim`, the set of claims being worked, and the catch-up on startup and at the start of each run. Carry on a stopped run with a fresh queue agent that counts the run's claims already worked. The backend posts to the service after `start_run`, `run_agent` and `sign_off`, and no longer runs the agent or releases claims on startup. Add the agent to `npm run dev`.
 
-- [ ] `resume_claim` (stub model, the backend in-process) on a signed-off claim pays it once; a second call does nothing
-- [ ] `work_run` works the run in the background and returns at once
-- [ ] The catch-up: with one claim stopped partway and one signed off while the service was down, starting the service carries both on: the first is decided with the same thread and attempts, the second is paid once
-- [ ] A stopped run is finished: a run left `running` with one of its two claims worked is carried on when the service starts; it works one more claim, not two, and finishes with a summary
-- [ ] A run starts with the catch-up: a signed-off claim waiting is paid before the run's first claim
-- [ ] The backend's `sign_off` commits, then posts `resume_claim` to `UNDERCOVER_AGENT`; with the service unreachable, the sign-off still returns 200 and stands (backend tests use a recording fake for the call)
-- [ ] `start_run` and `run_agent` post `work_run`; the backend no longer imports `agent`
-- [ ] Restarting the backend leaves a claim `in_progress` as it is
-- [ ] `npm run dev` starts three processes; `GET http://127.0.0.1:8002/health` returns `{"status": "ok"}`
-- [ ] `uv run -m agent --cap 1` with `MODEL_NAME` unset starts a run that the service works and prints its summary (a live call; reseed first)
-- [ ] `npm run check:python` passes
+- [x] `resume_claim` (stub model, the backend in-process) on a signed-off claim pays it once; a second call does nothing
+- [x] `work_run` works the run in the background and returns at once
+- [x] The catch-up: with one claim stopped partway and one signed off while the service was down, starting the service carries both on: the first is decided with the same thread and attempts, the second is paid once
+- [x] A stopped run is finished: a run left `running` with one of its two claims worked is carried on when the service starts; it works one more claim, not two, and finishes with a summary
+- [x] A run starts with the catch-up: a signed-off claim waiting is paid before the run's first claim
+- [x] The backend's `sign_off` commits, then posts `resume_claim` to `UNDERCOVER_AGENT`; with the service unreachable, the sign-off still returns 200 and stands (backend tests use a recording fake for the call)
+- [x] `start_run` and `run_agent` post `work_run`; the backend no longer imports `agent`
+- [x] Restarting the backend leaves a claim `in_progress` as it is
+- [x] `npm run dev` starts three processes; `GET http://127.0.0.1:8002/health` returns `{"status": "ok"}`
+- [x] `uv run -m agent --cap 1` with `MODEL_NAME` unset starts a run that the service works and prints its summary (a live call; reseed first)
+- [x] `npm run check:python` passes
 
 ## Phase 5: the dashboard and the e2e tests
 
