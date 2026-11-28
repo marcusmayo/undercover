@@ -1,14 +1,39 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
 import { App } from "./App";
+import { date, dateTime, label, money } from "./format";
+import { claim, fakeFetch, summary } from "./testing";
 
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  window.location.hash = "";
 });
 
+const CLAIMS = [
+  summary(),
+  summary({ claim_id: "CLM-1002", status: "decided", amount_claimed: 80 }),
+  summary({ claim_id: "CLM-1003", status: "decided" }),
+  summary({ claim_id: "CLM-1004", status: "awaiting_signoff" }),
+  summary({ claim_id: "CLM-1005", status: "needs_handler" }),
+];
+
+function routes() {
+  return fakeFetch({
+    "GET /api/health": { status: "ok" },
+    "GET /api/claims": CLAIMS,
+    "GET /api/instructions": {
+      queue: "You are running the claims queue.",
+      claim: "You are working one claim.",
+    },
+    "GET /api/runs/latest": null,
+    "GET /api/claims/CLM-1001": claim(),
+    "GET /api/claims/CLM-1001/steps": [],
+  });
+}
+
 it("shows that the backend is up", async () => {
-  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("{}")));
+  routes();
   render(<App />);
   expect(await screen.findByText("Backend: up")).toBeDefined();
 });
@@ -17,4 +42,116 @@ it("shows that the backend is down", async () => {
   vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
   render(<App />);
   expect(await screen.findByText("Backend: down")).toBeDefined();
+});
+
+it("lists the queue with amounts, types and links", async () => {
+  routes();
+  render(<App />);
+  const link = await screen.findByRole("link", { name: "CLM-1001" });
+  expect(link.getAttribute("href")).toBe("#/claims/CLM-1001");
+  expect(screen.getAllByRole("row")).toHaveLength(6);
+  expect(screen.getAllByText("$1,250.00")).toHaveLength(4);
+  expect(screen.getByText("$80.00")).toBeDefined();
+  expect(screen.getAllByText("Trip delay")).toHaveLength(5);
+});
+
+it("counts the claims in each state", async () => {
+  routes();
+  render(<App />);
+  expect((await screen.findByLabelText("Waiting count")).textContent).toBe("1");
+  expect(screen.getByLabelText("In progress count").textContent).toBe("0");
+  expect(screen.getByLabelText("Waiting for sign-off count").textContent).toBe(
+    "1",
+  );
+  expect(screen.getByLabelText("Decided count").textContent).toBe("2");
+  expect(screen.getByLabelText("Left for a handler count").textContent).toBe(
+    "1",
+  );
+});
+
+it("colors each state chip", async () => {
+  routes();
+  render(<App />);
+  await screen.findByRole("link", { name: "CLM-1001" });
+  const chip = screen.getAllByText("Waiting for sign-off")[1];
+  expect(chip.className).toBe("chip chip-awaiting_signoff");
+  const handler = screen.getAllByText("Left for a handler")[1];
+  expect(handler.className).toBe("chip chip-needs_handler");
+});
+
+it("refreshes the queue as claims change", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  let claims = [summary()];
+  fakeFetch({
+    "GET /api/health": { status: "ok" },
+    "GET /api/claims": () => claims,
+  });
+  render(<App />);
+  expect((await screen.findByLabelText("Decided count")).textContent).toBe("0");
+  claims = [summary({ status: "decided" })];
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(2000);
+  });
+  expect(screen.getByLabelText("Decided count").textContent).toBe("1");
+  vi.useRealTimers();
+});
+
+it("keeps the queue on screen if a refresh fails", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  let healthy = true;
+  fakeFetch({
+    "GET /api/health": { status: "ok" },
+    "GET /api/claims": () =>
+      healthy ? [summary()] : new Response("{}", { status: 500 }),
+  });
+  render(<App />);
+  await screen.findByRole("link", { name: "CLM-1001" });
+  healthy = false;
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(2000);
+  });
+  expect(screen.getByRole("link", { name: "CLM-1001" })).toBeDefined();
+  vi.useRealTimers();
+});
+
+it("shows an error when the queue fails", async () => {
+  fakeFetch({ "GET /api/claims": new Response("{}", { status: 500 }) });
+  render(<App />);
+  expect(await screen.findByText("Could not load the queue.")).toBeDefined();
+});
+
+it("shows the instructions read only", async () => {
+  routes();
+  window.location.hash = "#/instructions";
+  render(<App />);
+  const queue = within(await screen.findByLabelText("Running the queue"));
+  expect(queue.getByText("You are running the claims queue.")).toBeDefined();
+  const claim = within(screen.getByLabelText("Working a claim"));
+  expect(claim.getByText("You are working one claim.")).toBeDefined();
+  expect(screen.queryByRole("textbox")).toBeNull();
+  const current = screen.getByRole("link", { current: "page" });
+  expect(current.textContent).toBe("Instructions");
+});
+
+it("follows the hash to a claim", async () => {
+  routes();
+  render(<App />);
+  await screen.findByRole("link", { name: "CLM-1001" });
+  act(() => {
+    window.location.hash = "#/claims/CLM-1001";
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+  });
+  expect(
+    await screen.findByRole("heading", { name: "CLM-1001" }),
+  ).toBeDefined();
+});
+
+it("formats money, dates and labels", () => {
+  expect(money(1250)).toBe("$1,250.00");
+  expect(date("2026-06-24")).toBe("Jun 24, 2026");
+  expect(date("2026-06-24T10:00:00+00:00")).toBe("Jun 24, 2026");
+  expect(dateTime("2026-06-24T15:30:00+00:00")).toBe(
+    "Jun 24, 2026, 3:30 PM UTC",
+  );
+  expect(label("emergency_medical")).toBe("Emergency medical");
 });
