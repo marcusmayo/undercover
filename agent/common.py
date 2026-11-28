@@ -15,7 +15,7 @@ from langchain_openai import ChatOpenAI
 from langfuse.langchain import CallbackHandler
 from pydantic import SecretStr
 
-BACKEND_URL = "http://localhost:8000"
+BACKEND_URL = "http://127.0.0.1:8000"
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_MODEL = "deepseek/deepseek-v4.1-flash"
 MODEL_TIMEOUT = 60

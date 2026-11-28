@@ -1,6 +1,6 @@
 # Process
 
-`uv sync` and `npm install` at the repo root install everything, including a git pre-commit hook. `npm run dev` starts the backend and the dashboard.
+`uv sync` and `npm install` at the repo root install everything, including a git pre-commit hook. `npm run dev` starts the backend, the agent's service and the dashboard, with the settings in `.env`, which must exist. `npm run seed` rebuilds our tables, on Supabase when `.env` has `DATABASE_URL`.
 
 `npm run check` runs every check:
 
@@ -31,7 +31,7 @@ When the last phase is done, run `npm run check` and report the results.
 
 ## Rules
 
-- Add tests with each change. Tests never call a model; use a stub model.
+- Add tests with each change. Tests never call a model; use a stub model. Tests never read `.env`: they run on SQLite with no network, and `npm run check` passes with `.env` moved away.
 - Outside a plan, commit each change once you have checked it.
 - Run `npm run check` before you hand work over.
 - Never use `git commit --no-verify`.

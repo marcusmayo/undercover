@@ -4,6 +4,7 @@ The graph saves its state after every step, so a claim stopped partway carries o
 its last step, and a claim waiting for a sign-off carries on once a handler signs off.
 """
 
+import contextvars
 import json
 import os
 from functools import cache
@@ -115,21 +116,25 @@ def tools(state: ClaimState, config: RunnableConfig) -> dict[str, Any]:
     return update
 
 
-def signoff(state: ClaimState) -> dict[str, Any]:
-    """Wait for a handler to sign off a payout over the limit."""
-    answer = interrupt({"claim_id": state["claim_id"], "payout": state["payout"]})
-    return {"signed_off_by": answer["handler"], "status": "in_progress"}
+def pay(state: ClaimState) -> dict[str, Any]:
+    """Pay the approved payout, first waiting for a sign-off if the backend wants one.
 
-
-def pay(state: ClaimState) -> None:
-    """Pay the approved payout; the backend counts a repeat as done."""
+    On resume the node runs again from the top, so nothing comes before the wait,
+    and the backend counts a repeat of the payment as done.
+    """
     claim_id = state["claim_id"]
+    signed_off_by = state["signed_off_by"]
+    if state["status"] == "awaiting_signoff":
+        signed_off_by = interrupt({"claim_id": claim_id, "payout": state["payout"]})[
+            "handler"
+        ]
     api("POST", f"/api/claims/{claim_id}/payment", {"amount": state["payout"]})
     call(
         "POST",
         f"/api/claims/{claim_id}/steps",
         {"kind": "message", "content": f"Paid ${state['payout']:,.2f}."},
     )
+    return {"signed_off_by": signed_off_by, "status": "decided"}
 
 
 def after_agent(state: ClaimState) -> str:
@@ -144,8 +149,6 @@ def after_tools(state: ClaimState) -> str:
     """Back to the model, or on from the decision as the backend recorded it."""
     if state["decision"] is None:
         return "agent"
-    if state["status"] == "awaiting_signoff":
-        return "signoff"
     if state["decision"] == "approve" and state["payout"] > 0:
         return "pay"
     return END
@@ -168,15 +171,11 @@ def build(llm: BaseChatModel, system_prompt: str) -> CompiledStateGraph[Any, Any
     builder = StateGraph(ClaimState)
     builder.add_node("agent", Agent(llm, system_prompt), retry_policy=model_retry)
     builder.add_node("tools", tools, retry_policy=backend_retry)
-    builder.add_node("signoff", signoff)
     builder.add_node("pay", pay, retry_policy=backend_retry)
 
     builder.add_edge(START, "agent")
     builder.add_conditional_edges("agent", after_agent, ["tools", END])
-    builder.add_conditional_edges(
-        "tools", after_tools, ["agent", "signoff", "pay", END]
-    )
-    builder.add_edge("signoff", "pay")
+    builder.add_conditional_edges("tools", after_tools, ["agent", "pay", END])
     builder.add_edge("pay", END)
     return builder.compile(checkpointer=checkpointer())
 
@@ -211,4 +210,5 @@ def run(claim_id: str, thread_id: str, llm: BaseChatModel | None = None) -> None
         return
     else:
         command = start_state(claim_id)
-    graph.invoke(command, config, durability="sync")
+    # A fresh context makes the claim a trace of its own, even inside a queue run.
+    contextvars.Context().run(graph.invoke, command, config, durability="sync")

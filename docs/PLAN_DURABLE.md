@@ -14,8 +14,8 @@ The graph follows the lab's shape: a `ClaimState`, nodes that are plain function
 
 ```
 START -> agent -> tools -> agent ...   (the model and its tools, as in create_agent)
-                   tools -> signoff -> pay -> END   (the backend says the claim needs a sign-off)
-                   tools -> pay -> END              (an approval within the limit)
+                   tools -> pay -> END              (an approval; pay waits for a sign-off first
+                                                     when the backend says it needs one)
                    tools -> END                     (a decline or a referral)
          agent -> END                               (no more tool calls, or 30 model calls)
 ```
@@ -23,9 +23,9 @@ START -> agent -> tools -> agent ...   (the model and its tools, as in create_ag
 - **State:** `messages` (with `add_messages`), `claim_id`, `model_calls`, and the outcome of the decision as the backend recorded it: `decision`, `payout`, `status`, `signed_off_by`.
 - **`agent`:** calls the model with the claim instructions and the tools, adds one to `model_calls`, and posts the model's message and tool calls as steps on the claim.
 - **`tools`:** runs the tool calls with LangGraph's `ToolNode` and posts each result as a step (and a `read` step for each section read). Refusals from the backend come back to the model as text, as today. When `record_decision` succeeds, the node copies the decision, payout and status the backend returned into the state.
-- **`signoff`:** calls `interrupt()` with the claim id and payout. Nothing comes before the `interrupt()`, because the lab showed that a node runs again from the top when it resumes. The handler's answer (who and when) goes into the state.
+- **Waiting for the sign-off (built in `pay`):** when the backend's status is `awaiting_signoff`, `pay` first calls `interrupt()` with the claim id and payout. Nothing comes before the `interrupt()`, because the lab showed that a node runs again from the top when it resumes. The handler's answer (who) goes into the state with the payment. (Planned as a `signoff` node of its own, as in the lab. Built inside `pay` because on Supabase every step's checkpoint costs several round trips: a separate node added about 1.7 seconds between the sign-off and the payment, and the brief wants the payment on screen within five seconds.)
 - **`pay`:** calls the backend's `pay_claim` with the approved payout and posts a "Paid" step. It is its own node so it is the only thing that can run twice after a crash, and the backend makes a repeat harmless.
-- **Edges:** after `agent`, go to `tools` if the model asked for one, otherwise end. After `tools`, if a decision was recorded: `signoff` when the backend's status is `awaiting_signoff`, `pay` for any other approval, and the end for a decline or a referral; otherwise back to `agent`. The graph never compares the payout with $1,000 itself: it follows the status the backend returned.
+- **Edges:** after `agent`, go to `tools` if the model asked for one, otherwise end. After `tools`, if a decision was recorded: `pay` for an approval, and the end for a decline or a referral; otherwise back to `agent`. The graph never compares the payout with $1,000 itself: it follows the status the backend returned.
 
 How this keeps what the middleware does today:
 
@@ -61,8 +61,8 @@ The entry point is `run(claim_id, thread_id)`, as `docs/TECH_STACK.md` asks. It 
 |---|---|
 | No checkpoint yet | Starts the graph on the claim |
 | Stopped partway | Carries on with `invoke(None)` from the last checkpoint |
-| Waiting at `signoff`, and the claim is signed off | Resumes with `Command(resume={handler, at})`, then `pay` runs |
-| Waiting at `signoff`, not signed off | Nothing; it is still waiting |
+| Waiting for a sign-off, and the claim is signed off | Resumes with `Command(resume={handler, at})`, and `pay` pays |
+| Waiting for a sign-off, not signed off | Nothing; it is still waiting |
 
 Every call passes Langfuse's `CallbackHandler` in the config with the thread id as `langfuse_session_id`, so the work before a pause and after a sign-off land in one session named after the claim and its thread. The handler is only added when the Langfuse keys are in the environment, so the tests never reach Langfuse.
 
@@ -109,7 +109,7 @@ The backend's startup no longer fails running runs or releases claims in progres
 |---|---|
 | Waiting | Seeded; or its attempt failed with an error |
 | In progress | `start_claim`; or a handler signed off and the payment is on its way |
-| Waiting for sign-off | Approved with a payout over $1,000; the graph waits at `signoff` |
+| Waiting for sign-off | Approved with a payout over $1,000; the graph waits in `pay` |
 | Decided | Declined, referred, or approved and paid |
 | Left for a handler | Its second attempt failed |
 
@@ -174,7 +174,7 @@ Move `backend/db.py` and every query in `backend/main.py` to SQLAlchemy Core. Ad
 
 ## Phase 3: the claim agent as a graph
 
-Build `agent/graph.py`: `ClaimState`, the nodes `agent`, `tools`, `signoff` and `pay`, the edges, the retry policies, the 30-call cap and the checkpointer (`PostgresSaver` on a pool of 4 with `DATABASE_URL`, `InMemorySaver` without). Build the entry point `run(claim_id, thread_id)`. Remove `pay_claim` from the tools and update `claim.md`. Change the backend: `sign_off` records the sign-off and moves the claim to `in_progress`; `pay_claim` moves a signed-off claim to `decided`; `release_claim` refuses a claim with a decision.
+Build `agent/graph.py`: `ClaimState`, the nodes `agent`, `tools`, `signoff` and `pay` (built in Phase 6 with the wait inside `pay`), the edges, the retry policies, the 30-call cap and the checkpointer (`PostgresSaver` on a pool of 4 with `DATABASE_URL`, `InMemorySaver` without). Build the entry point `run(claim_id, thread_id)`. Remove `pay_claim` from the tools and update `claim.md`. Change the backend: `sign_off` records the sign-off and moves the claim to `in_progress`; `pay_claim` moves a signed-off claim to `decided`; `release_claim` refuses a claim with a decision.
 
 - [x] The claim agent's tools are exactly the seven listed above; `pay_claim` is not among them
 - [x] An approval within the limit (stub): the graph records the decision, then `pay` pays it; the claim is `decided` and paid, with a "Paid" step
@@ -224,11 +224,11 @@ The sign-off button becomes "Sign off" and no longer pays. A claim signed off an
 
 Update `docs/SPEC.md` (its section on working the queue, not its Rules), `docs/TECH_STACK.md`, `docs/PROCESS.md` and `docs/STATUS.md`. Then reseed Supabase and run the real model, capped at five claims.
 
-- [ ] `docs/SPEC.md`, `docs/TECH_STACK.md`, `docs/PROCESS.md` and `docs/STATUS.md` describe the product as it now is; the Rules in `docs/SPEC.md` are unchanged
-- [ ] Live run: `npm run seed`, `npm run dev`, then Run the queue with a cap of 5 on the default model works five claims and the other 20 stay `waiting`
-- [ ] If none of the five needs a sign-off, a one-claim run on a claim over the limit (such as CLM-1003) gives one, after a reseed
-- [ ] The held claim waits as Waiting for sign-off. Signed off on the dashboard with the Playwright MCP server, it shows as paid within five seconds, with the handler and the time
-- [ ] During the run, through the Supabase MCP server, `SELECT count(*) FROM pg_stat_activity WHERE usename = 'postgres'` stays at 12 or fewer
-- [ ] Through Langfuse's API, the held claim's session (named for its thread) has traces from before and after the sign-off
-- [ ] The kill: after a reseed, a one-claim run is stopped by killing the agent's service after the claim's first steps; when the service starts again it carries on the same thread, with the attempts unchanged and one decision, and the run finishes
-- [ ] `npm run check` passes in full with `.env` moved out of the way
+- [x] `docs/SPEC.md`, `docs/TECH_STACK.md`, `docs/PROCESS.md` and `docs/STATUS.md` describe the product as it now is; the Rules in `docs/SPEC.md` are unchanged
+- [x] Live run: `npm run seed`, `npm run dev`, then Run the queue with a cap of 5 on the default model works five claims and the other 20 stay `waiting`
+- [x] If none of the five needs a sign-off, a one-claim run on a claim over the limit (such as CLM-1003) gives one, after a reseed
+- [x] The held claim waits as Waiting for sign-off. Signed off on the dashboard with the Playwright MCP server, it shows as paid within five seconds, with the handler and the time
+- [x] During the run, through the Supabase MCP server, `SELECT count(*) FROM pg_stat_activity WHERE usename = 'postgres'` stays at 12 or fewer
+- [x] Through Langfuse's API, the held claim's session (named for its thread) has traces from before and after the sign-off
+- [x] The kill: after a reseed, a one-claim run is stopped by killing the agent's service after the claim's first steps; when the service starts again it carries on the same thread, with the attempts unchanged and one decision, and the run finishes
+- [x] `npm run check` passes in full with `.env` moved out of the way

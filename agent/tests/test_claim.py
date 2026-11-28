@@ -3,7 +3,9 @@ import json
 
 import httpx
 import pytest
+from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.runnables import RunnableLambda
 from langgraph.checkpoint.memory import InMemorySaver
 
 from agent import claim, common, graph, tools
@@ -145,7 +147,7 @@ def test_the_pause_before_a_payout_over_the_limit(client):
     assert held["status"] == "awaiting_signoff"
     assert held["paid_at"] is None
     state = saved()
-    assert state.next == ("signoff",)
+    assert state.next == ("pay",)
     assert state.interrupts[0].value == {"claim_id": "CLM-1001", "payout": 1150.0}
 
 
@@ -177,7 +179,7 @@ def test_a_claim_not_signed_off_keeps_waiting(client):
     work(stub(decision(payout=1150.0)))
     graph.run("CLM-1001", get_thread("CLM-1001"), stub())
     assert get(client)["status"] == "awaiting_signoff"
-    assert saved().next == ("signoff",)
+    assert saved().next == ("pay",)
 
 
 def test_a_claim_stopped_partway_carries_on_from_its_last_step(client):
@@ -301,6 +303,21 @@ def test_each_claim_is_traced_in_its_own_session(client, monkeypatch):
     assert threads == [get_thread("CLM-1001")] * 2
 
 
+def test_a_claim_is_a_trace_of_its_own_inside_a_run(client, monkeypatch):
+    class Recorder(BaseCallbackHandler):
+        parents: list = []
+
+        def on_chain_start(
+            self, serialized, inputs, *, run_id, parent_run_id=None, **kw
+        ):
+            self.parents.append(parent_run_id)
+
+    recorder = Recorder()
+    monkeypatch.setattr(graph, "tracing", lambda thread: {"callbacks": [recorder]})
+    RunnableLambda(lambda _: work(stub(*decided()))).invoke(None)
+    assert recorder.parents[0] is None
+
+
 def test_tracing(monkeypatch):
     monkeypatch.delenv("LANGFUSE_SECRET_KEY", raising=False)
     assert common.tracing("CLM-1001-abc") == {}
@@ -363,6 +380,11 @@ def test_tools_only_call_the_backend():
         source = inspect.getsource(module)
         assert "data/" not in source
         assert "open(" not in source
+
+
+def test_the_backend_is_reached_by_its_ipv4_address():
+    # On Windows, localhost tries IPv6 first and waits about 2 seconds a call.
+    assert common.BACKEND_URL == "http://127.0.0.1:8000"
 
 
 def test_server_errors_raise(monkeypatch):

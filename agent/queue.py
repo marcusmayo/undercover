@@ -106,6 +106,24 @@ def tools(run: Run) -> list[BaseTool]:
     return [list_waiting_claims, write_todos, work_claim, finish_run]
 
 
+def so_far(run: Run) -> str:
+    """Tell a queue agent carrying on a stopped run what the run has done already."""
+    if not run.worked:
+        return ""
+    lines = []
+    for claim_id in run.worked:
+        found = api("GET", f"/api/claims/{claim_id}")
+        lines.append(
+            claim.outcome(found)
+            if found["decision"]
+            else f"{claim_id}: {found['status']}"
+        )
+    return (
+        " This run was stopped partway and you are carrying it on. It has already "
+        f"worked: {'; '.join(lines)}. Include them in the to-do list and the summary."
+    )
+
+
 def work_queue(run_id: int, llm: BaseChatModel) -> None:
     """Let the queue agent work the run, finishing it if the agent did not."""
     record = api("GET", f"/api/runs/{run_id}")
@@ -125,7 +143,11 @@ def work_queue(run_id: int, llm: BaseChatModel) -> None:
         else f"the waiting claims, up to {run.cap} of them"
     )
     agent.invoke(
-        {"messages": [{"role": "user", "content": f"Please work {scope}."}]},
+        {
+            "messages": [
+                {"role": "user", "content": f"Please work {scope}.{so_far(run)}"}
+            ]
+        },
         config={"recursion_limit": RECURSION_LIMIT},
     )
     if api("GET", f"/api/runs/{run_id}")["status"] == "running":

@@ -246,6 +246,11 @@ def test_a_stopped_run_is_finished_by_carrying_it_on(client):
     queue.run_queue(run_id, llm)
     listing = json.loads(tool_results(llm, "list_waiting_claims")[0])
     assert listing["worked_so_far"] == ["CLM-1001", "CLM-1002"]
+    prompt = next(m.content for m in llm.seen[-1] if m.type == "human")
+    assert "carrying it on" in prompt
+    assert (
+        "CLM-1001: approve, $100.00, paid; CLM-1002: approve, $100.00, paid" in prompt
+    )
     assert listing["new_claims_left"] == 0
     assert tool_results(llm, "work_claim")[0] == (
         "Refused: the run has already worked its cap of 2"
